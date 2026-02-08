@@ -5,16 +5,19 @@ import numpy as np
 import pandas as pd
 
 from src.data_loader.data_types import ServiceMetrics, AnomalyCase
-from src.data_loader.synthetic_generator import SyntheticMetricsGenerator, SERVICE_NAMES
-from src.data_loader.fault_generator import FaultGenerator
-from src.data_loader.dataset import generate_combined_dataset
+from src.data_loader.synthetic_generator import (
+    SyntheticMetricsGenerator,
+    SERVICE_NAMES,
+    EVENT_TYPES,
+    EVENT_TYPE_CONFIG,
+)
+from src.data_loader.fault_generator import FaultGenerator, FAULT_TYPES
+from src.data_loader.dataset import generate_combined_dataset, generate_research_dataset
 
 EXPECTED_COLUMNS = [
     "timestamp", "cpu_usage", "memory_usage", "request_rate",
     "error_rate", "latency", "network_in", "network_out",
 ]
-
-EXPECTED_FAULT_TYPES = ["cpu", "memory", "network", "latency", "error"]
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -65,7 +68,7 @@ class TestAnomalyCase:
             services=[sm],
             context={"event_type": "flash_sale"},
             fault_service="frontend",
-            fault_type="cpu",
+            fault_type="cpu_hog",
         )
         assert case.case_id == "test_001"
         assert case.system == "online-boutique"
@@ -73,7 +76,7 @@ class TestAnomalyCase:
         assert len(case.services) == 1
         assert case.context == {"event_type": "flash_sale"}
         assert case.fault_service == "frontend"
-        assert case.fault_type == "cpu"
+        assert case.fault_type == "cpu_hog"
 
     def test_anomaly_case_defaults(self, sample_dataframe):
         sm = ServiceMetrics(service_name="cart", metrics=sample_dataframe)
@@ -136,6 +139,40 @@ class TestSyntheticGeneratorLoadSpike:
         max_cpus = [sm.metrics["cpu_usage"].max() for sm in services]
         assert max(max_cpus) > 30
 
+    def test_all_five_event_types_supported(self):
+        """Verify all 5 event types can be generated."""
+        assert len(EVENT_TYPES) == 5
+        expected = {
+            "flash_sale", "marketing_campaign", "scheduled_batch",
+            "viral_content", "seasonal_peak",
+        }
+        assert set(EVENT_TYPES) == expected
+
+        gen = SyntheticMetricsGenerator(n_services=4, sequence_length=60, seed=1)
+        for etype in EVENT_TYPES:
+            services, ctx = gen.generate_load_spike_metrics(event_type=etype)
+            assert ctx["event_type"] == etype
+            assert len(services) == 4
+            # Error rate should stay low (stable)
+            for sm in services:
+                err = sm.metrics["error_rate"].values
+                assert np.all(err >= 0) and np.all(err <= 1)
+
+    def test_event_type_multiplier_ranges(self):
+        """Verify per-event-type multiplier ranges are respected."""
+        rng = np.random.RandomState(42)
+        for etype, cfg in EVENT_TYPE_CONFIG.items():
+            lo, hi = cfg["multiplier_range"]
+            gen = SyntheticMetricsGenerator(
+                n_services=2, sequence_length=60,
+                seed=int(rng.randint(10000)),
+            )
+            _, ctx = gen.generate_load_spike_metrics(event_type=etype)
+            mult = ctx["load_multiplier"]
+            assert lo <= mult <= hi, (
+                f"{etype}: multiplier {mult} outside [{lo}, {hi}]"
+            )
+
 
 # ── FaultGenerator ────────────────────────────────────────────────────
 
@@ -148,7 +185,7 @@ class TestFaultGenerator:
         assert isinstance(services, list)
         assert len(services) == 12
         assert fault_service in SERVICE_NAMES
-        assert fault_type in EXPECTED_FAULT_TYPES
+        assert fault_type in FAULT_TYPES
 
         # The faulty service should have higher mean error rate
         err_by_service = {
@@ -157,6 +194,27 @@ class TestFaultGenerator:
         }
         other_errors = [v for k, v in err_by_service.items() if k != fault_service]
         assert err_by_service[fault_service] > np.mean(other_errors)
+
+    def test_all_eleven_fault_types_supported(self):
+        """Verify all 11 fault types can be generated."""
+        assert len(FAULT_TYPES) == 11
+
+        for i, ft in enumerate(FAULT_TYPES):
+            gen = FaultGenerator(n_services=4, sequence_length=60, seed=100 + i)
+            services, fault_svc, returned_ft = gen.generate_fault_metrics(
+                fault_type=ft
+            )
+            assert returned_ft == ft
+            assert len(services) == 4
+            # Faulty service should have elevated error rate
+            err_by_svc = {
+                sm.service_name: sm.metrics["error_rate"].mean()
+                for sm in services
+            }
+            other_errors = [v for k, v in err_by_svc.items() if k != fault_svc]
+            assert err_by_svc[fault_svc] > np.mean(other_errors), (
+                f"Fault type {ft}: faulty service error rate not elevated"
+            )
 
 
 # ── generate_combined_dataset ─────────────────────────────────────────
@@ -197,3 +255,68 @@ class TestCombinedDataset:
         assert len(load_cases) == 1
         assert fault_cases[0].label == "FAULT"
         assert load_cases[0].label == "EXPECTED_LOAD"
+
+
+# ── generate_research_dataset ────────────────────────────────────────
+
+class TestResearchDataset:
+    def test_research_dataset_sizes(self):
+        """Verify 735 FAULT + 600 EXPECTED_LOAD split correctly."""
+        splits = generate_research_dataset(seed=42)
+
+        assert set(splits.keys()) == {"train", "val", "test"}
+
+        # Count labels per split
+        train_fault = sum(1 for c in splits["train"] if c.label == "FAULT")
+        train_load = sum(1 for c in splits["train"] if c.label == "EXPECTED_LOAD")
+        val_fault = sum(1 for c in splits["val"] if c.label == "FAULT")
+        val_load = sum(1 for c in splits["val"] if c.label == "EXPECTED_LOAD")
+        test_fault = sum(1 for c in splits["test"] if c.label == "FAULT")
+        test_load = sum(1 for c in splits["test"] if c.label == "EXPECTED_LOAD")
+
+        # Train: 500 FAULT + 400 EXPECTED_LOAD = 900
+        assert train_fault == 500
+        assert train_load == 400
+        assert len(splits["train"]) == 900
+
+        # Val: 100 FAULT + 100 EXPECTED_LOAD = 200
+        assert val_fault == 100
+        assert val_load == 100
+        assert len(splits["val"]) == 200
+
+        # Test: 135 FAULT + 100 EXPECTED_LOAD = 235
+        assert test_fault == 135
+        assert test_load == 100
+        assert len(splits["test"]) == 235
+
+        # Total: 735 + 600 = 1335
+        total = len(splits["train"]) + len(splits["val"]) + len(splits["test"])
+        assert total == 1335
+
+    def test_research_dataset_three_systems(self):
+        """Verify cases are distributed across all 3 systems."""
+        splits = generate_research_dataset(seed=42)
+        all_cases = splits["train"] + splits["val"] + splits["test"]
+        systems_seen = {c.system for c in all_cases}
+        assert systems_seen == {"online-boutique", "sock-shop", "train-ticket"}
+
+    def test_research_dataset_all_fault_types(self):
+        """Verify all 11 fault types appear in the dataset."""
+        splits = generate_research_dataset(seed=42)
+        all_cases = splits["train"] + splits["val"] + splits["test"]
+        fault_types_seen = {
+            c.fault_type for c in all_cases
+            if c.label == "FAULT" and c.fault_type is not None
+        }
+        assert fault_types_seen == set(FAULT_TYPES)
+
+    def test_research_dataset_all_event_types(self):
+        """Verify all 5 event types appear in the dataset."""
+        splits = generate_research_dataset(seed=42)
+        all_cases = splits["train"] + splits["val"] + splits["test"]
+        event_types_seen = {
+            c.context.get("event_type")
+            for c in all_cases
+            if c.label == "EXPECTED_LOAD"
+        }
+        assert event_types_seen == set(EVENT_TYPES)

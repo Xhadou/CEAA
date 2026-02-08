@@ -25,6 +25,41 @@ SERVICE_NAMES: List[str] = [
     "loadgenerator",
 ]
 
+# Per-event-type configuration matching the specification table.
+# multiplier_range: load multiplier bounds
+# duration_range: spike duration bounds (in timesteps)
+# error_rate_mult_range: error-rate multiplier bounds (stable = near 1.0)
+EVENT_TYPE_CONFIG: Dict[str, Dict] = {
+    "flash_sale": {
+        "multiplier_range": (2.5, 5.0),
+        "duration_range": (30, 120),
+        "error_rate_mult_range": (0.8, 1.1),
+    },
+    "marketing_campaign": {
+        "multiplier_range": (1.5, 3.0),
+        "duration_range": (60, 240),
+        "error_rate_mult_range": (0.9, 1.05),
+    },
+    "scheduled_batch": {
+        "multiplier_range": (1.3, 2.5),
+        "duration_range": (20, 60),
+        "error_rate_mult_range": (0.95, 1.0),
+    },
+    "viral_content": {
+        "multiplier_range": (3.0, 8.0),
+        "duration_range": (60, 180),
+        "error_rate_mult_range": (0.85, 1.15),
+    },
+    "seasonal_peak": {
+        "multiplier_range": (1.8, 3.5),
+        "duration_range": (100, 300),
+        "error_rate_mult_range": (0.9, 1.02),
+    },
+}
+
+# Canonical ordered list of supported event types.
+EVENT_TYPES: List[str] = list(EVENT_TYPE_CONFIG.keys())
+
 
 class SyntheticMetricsGenerator:
     """Generates realistic synthetic microservice metrics.
@@ -130,30 +165,34 @@ class SyntheticMetricsGenerator:
         """Generate metrics showing a legitimate load spike.
 
         Characteristics:
-            - Error rate stays stable (multiplied by 0.8-1.1 only).
+            - Error rate stays stable (multiplied by a small factor only).
             - Gradual ramp-up (10-20 % of sequence) and ramp-down.
             - All services scale together (high cross-service correlation).
             - CPU, request_rate, latency, network all increase proportionally.
 
+        Each event type has its own multiplier, duration, and error-rate
+        ranges matching the specification table.
+
         Args:
             system: Name of the system.
-            load_multiplier: Peak multiplier for load metrics. Random 1.5-5.0
-                if not provided.
+            load_multiplier: Peak multiplier for load metrics. Sampled from
+                the event type's range if not provided.
             event_type: Type of event causing the spike. Random if not provided.
 
         Returns:
             Tuple of (list of ServiceMetrics, context dict).
         """
-        event_types = [
-            "flash_sale",
-            "marketing_campaign",
-            "scheduled_batch",
-            "viral_content",
-        ]
-        if load_multiplier is None:
-            load_multiplier = float(np.random.uniform(1.5, 5.0))
         if event_type is None:
-            event_type = str(np.random.choice(event_types))
+            event_type = str(np.random.choice(EVENT_TYPES))
+
+        cfg = EVENT_TYPE_CONFIG[event_type]
+
+        if load_multiplier is None:
+            load_multiplier = float(
+                np.random.uniform(*cfg["multiplier_range"])
+            )
+
+        err_lo, err_hi = cfg["error_rate_mult_range"]
 
         logger.info(
             "Generating load-spike metrics: system=%s multiplier=%.2f event=%s",
@@ -194,8 +233,8 @@ class SyntheticMetricsGenerator:
             df["network_in"] = np.clip(df["network_in"] * mult, 0, None)
             df["network_out"] = np.clip(df["network_out"] * mult, 0, None)
 
-            # Error rate stays stable
-            err_mult = np.random.uniform(0.8, 1.1)
+            # Error rate stays stable — key differentiator from faults
+            err_mult = np.random.uniform(err_lo, err_hi)
             df["error_rate"] = np.clip(df["error_rate"] * err_mult, 0, 1)
 
             results.append(ServiceMetrics(service_name=name, metrics=df))

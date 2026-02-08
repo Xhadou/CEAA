@@ -8,6 +8,11 @@ data:
   n_services: 12
   sequence_length: 60
 
+  # RCAEval dataset settings
+  rcaeval:
+    dataset: "RE1"
+    systems: ["online-boutique", "sock-shop", "train-ticket"]
+
 features:
   window_size: 60
   stride: 10
@@ -15,17 +20,42 @@ features:
   n_behavioral: 6
   n_context: 5
 
+  workload_features:
+    - global_load_ratio
+    - cpu_request_correlation
+    - cross_service_sync
+    - error_rate_delta
+    - latency_cpu_correlation
+    - memory_trend_uniformity
+
+  behavioral_features:
+    - onset_gradient
+    - peak_duration
+    - cascade_score
+    - recovery_indicator
+    - affected_service_ratio
+    - variance_change_ratio
+
 model:
+  anomaly_detector:
+    type: "lstm_ae"
+    hidden_dim: 64
+    latent_dim: 16
+    num_layers: 2
+
+  classifier:
+    type: "random_forest"
+    n_estimators: 100
+    max_depth: 10
+
   temporal_encoder:
     hidden_dim: 64
     num_layers: 2
     dropout: 0.1
+
   context_module:
     context_dim: 5
     hidden_dim: 32
-  classifier:
-    hidden_dim: 64
-    n_classes: 2
 
 training:
   epochs: 50

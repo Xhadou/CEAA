@@ -1,7 +1,7 @@
 """Combined dataset generation for CAAA anomaly attribution."""
 
 import logging
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -10,6 +10,9 @@ from src.data_loader.fault_generator import FaultGenerator
 from src.data_loader.synthetic_generator import SyntheticMetricsGenerator
 
 logger = logging.getLogger(__name__)
+
+# Systems matching RCAEval benchmark.
+RESEARCH_SYSTEMS: List[str] = ["online-boutique", "sock-shop", "train-ticket"]
 
 
 def generate_combined_dataset(
@@ -82,3 +85,69 @@ def generate_combined_dataset(
         len(load_cases),
     )
     return fault_cases, load_cases
+
+
+def generate_research_dataset(
+    seed: int = 42,
+) -> Dict[str, List[AnomalyCase]]:
+    """Generate the full research dataset matching the specification.
+
+    Produces 735 FAULT + 600 EXPECTED_LOAD = 1335 total cases across
+    3 systems (online-boutique, sock-shop, train-ticket), split into
+    train / val / test partitions:
+
+    +---------+-------+---------------+-------+
+    | Split   | FAULT | EXPECTED_LOAD | Total |
+    +---------+-------+---------------+-------+
+    | train   |   500 |           400 |   900 |
+    | val     |   100 |           100 |   200 |
+    | test    |   135 |           100 |   235 |
+    +---------+-------+---------------+-------+
+    | Total   |   735 |           600 | 1,335 |
+    +---------+-------+---------------+-------+
+
+    Args:
+        seed: Random seed for reproducibility.
+
+    Returns:
+        Dictionary with keys ``"train"``, ``"val"``, ``"test"``, each
+        mapping to a list of ``AnomalyCase`` objects.
+    """
+    systems = RESEARCH_SYSTEMS
+
+    fault_cases, load_cases = generate_combined_dataset(
+        n_fault=735, n_load=600, systems=systems, seed=seed,
+    )
+
+    rng = np.random.RandomState(seed)
+
+    # Shuffle within each class
+    fault_idx = rng.permutation(len(fault_cases)).tolist()
+    load_idx = rng.permutation(len(load_cases)).tolist()
+
+    # Split FAULT: 500 train, 100 val, 135 test
+    fault_train = [fault_cases[i] for i in fault_idx[:500]]
+    fault_val = [fault_cases[i] for i in fault_idx[500:600]]
+    fault_test = [fault_cases[i] for i in fault_idx[600:735]]
+
+    # Split EXPECTED_LOAD: 400 train, 100 val, 100 test
+    load_train = [load_cases[i] for i in load_idx[:400]]
+    load_val = [load_cases[i] for i in load_idx[400:500]]
+    load_test = [load_cases[i] for i in load_idx[500:600]]
+
+    train = fault_train + load_train
+    val = fault_val + load_val
+    test = fault_test + load_test
+
+    # Shuffle each split
+    rng.shuffle(train)
+    rng.shuffle(val)
+    rng.shuffle(test)
+
+    logger.info(
+        "Research dataset: train=%d, val=%d, test=%d (total=%d)",
+        len(train), len(val), len(test),
+        len(train) + len(val) + len(test),
+    )
+
+    return {"train": train, "val": val, "test": test}

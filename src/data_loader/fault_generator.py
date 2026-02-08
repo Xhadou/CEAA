@@ -11,9 +11,29 @@ from src.data_loader.synthetic_generator import SERVICE_NAMES
 
 logger = logging.getLogger(__name__)
 
+# All 11 fault types matching RCAEval benchmark specification.
+FAULT_TYPES: List[str] = [
+    "cpu_hog",
+    "memory_leak",
+    "network_delay",
+    "packet_loss",
+    "disk_io",
+    "pod_failure",
+    "dns_failure",
+    "connection_pool_exhaustion",
+    "thread_leak",
+    "config_error",
+    "dependency_failure",
+]
+
 
 class FaultGenerator:
     """Generates metrics that simulate fault injection in a microservice system.
+
+    Supports all 11 fault types from the RCAEval benchmark:
+        cpu_hog, memory_leak, network_delay, packet_loss, disk_io,
+        pod_failure, dns_failure, connection_pool_exhaustion, thread_leak,
+        config_error, dependency_failure.
 
     Attributes:
         n_services: Number of services to generate metrics for.
@@ -21,6 +41,7 @@ class FaultGenerator:
     """
 
     SERVICE_NAMES = SERVICE_NAMES
+    FAULT_TYPES = FAULT_TYPES
 
     def __init__(
         self,
@@ -91,7 +112,7 @@ class FaultGenerator:
 
         Args:
             df: Baseline metrics DataFrame.
-            fault_type: One of cpu, memory, network, latency, error.
+            fault_type: One of the 11 supported fault types.
             fault_start: Index at which the fault begins.
 
         Returns:
@@ -99,67 +120,168 @@ class FaultGenerator:
         """
         df = df.copy()
         n = len(df)
+        fault_len = n - fault_start
         fault_slice = slice(fault_start, n)
 
-        if fault_type == "cpu":
+        if fault_type == "cpu_hog":
             df.loc[fault_slice, "cpu_usage"] = np.clip(
                 df.loc[fault_slice, "cpu_usage"].values
-                + np.random.uniform(30, 60, n - fault_start),
-                0,
-                100,
+                + np.random.uniform(30, 60, fault_len),
+                0, 100,
             )
             df.loc[fault_slice, "error_rate"] = np.clip(
                 df.loc[fault_slice, "error_rate"].values
                 + np.random.uniform(0.1, 0.5),
-                0,
-                1,
+                0, 1,
             )
-        elif fault_type == "memory":
+
+        elif fault_type == "memory_leak":
+            # Gradual memory increase (leak pattern)
+            leak_ramp = np.linspace(0, np.random.uniform(30, 55), fault_len)
             df.loc[fault_slice, "memory_usage"] = np.clip(
-                df.loc[fault_slice, "memory_usage"].values
-                + np.random.uniform(30, 55, n - fault_start),
-                0,
-                100,
+                df.loc[fault_slice, "memory_usage"].values + leak_ramp,
+                0, 100,
             )
             df.loc[fault_slice, "error_rate"] = np.clip(
                 df.loc[fault_slice, "error_rate"].values
                 + np.random.uniform(0.1, 0.5),
-                0,
-                1,
+                0, 1,
             )
-        elif fault_type == "network":
-            df.loc[fault_slice, "network_in"] = np.clip(
-                df.loc[fault_slice, "network_in"].values * 0.1, 0, None
-            )
-            df.loc[fault_slice, "network_out"] = np.clip(
-                df.loc[fault_slice, "network_out"].values * 0.1, 0, None
-            )
-            df.loc[fault_slice, "error_rate"] = np.clip(
-                df.loc[fault_slice, "error_rate"].values
-                + np.random.uniform(0.1, 0.5),
-                0,
-                1,
-            )
-        elif fault_type == "latency":
+
+        elif fault_type == "network_delay":
             df.loc[fault_slice, "latency"] = np.clip(
                 df.loc[fault_slice, "latency"].values
-                + np.random.uniform(200, 800, n - fault_start),
-                0,
-                None,
+                + np.random.uniform(200, 800, fault_len),
+                0, None,
+            )
+            df.loc[fault_slice, "error_rate"] = np.clip(
+                df.loc[fault_slice, "error_rate"].values
+                + np.random.uniform(0.05, 0.3),
+                0, 1,
+            )
+
+        elif fault_type == "packet_loss":
+            df.loc[fault_slice, "network_in"] = np.clip(
+                df.loc[fault_slice, "network_in"].values * 0.1, 0, None,
+            )
+            df.loc[fault_slice, "network_out"] = np.clip(
+                df.loc[fault_slice, "network_out"].values * 0.1, 0, None,
             )
             df.loc[fault_slice, "error_rate"] = np.clip(
                 df.loc[fault_slice, "error_rate"].values
                 + np.random.uniform(0.1, 0.5),
-                0,
-                1,
+                0, 1,
             )
-        elif fault_type == "error":
+
+        elif fault_type == "disk_io":
+            df.loc[fault_slice, "latency"] = np.clip(
+                df.loc[fault_slice, "latency"].values
+                + np.random.uniform(100, 500, fault_len),
+                0, None,
+            )
+            df.loc[fault_slice, "cpu_usage"] = np.clip(
+                df.loc[fault_slice, "cpu_usage"].values
+                + np.random.uniform(10, 30, fault_len),
+                0, 100,
+            )
             df.loc[fault_slice, "error_rate"] = np.clip(
                 df.loc[fault_slice, "error_rate"].values
-                + np.random.uniform(0.1, 0.5),
-                0,
-                1,
+                + np.random.uniform(0.05, 0.2),
+                0, 1,
             )
+
+        elif fault_type == "pod_failure":
+            # Service goes completely down — requests drop, errors spike
+            df.loc[fault_slice, "request_rate"] = np.clip(
+                df.loc[fault_slice, "request_rate"].values * 0.05, 0, None,
+            )
+            df.loc[fault_slice, "error_rate"] = np.clip(
+                df.loc[fault_slice, "error_rate"].values
+                + np.random.uniform(0.4, 0.8),
+                0, 1,
+            )
+            df.loc[fault_slice, "cpu_usage"] = np.clip(
+                df.loc[fault_slice, "cpu_usage"].values * 0.1, 0, 100,
+            )
+
+        elif fault_type == "dns_failure":
+            df.loc[fault_slice, "latency"] = np.clip(
+                df.loc[fault_slice, "latency"].values
+                + np.random.uniform(500, 2000, fault_len),
+                0, None,
+            )
+            df.loc[fault_slice, "error_rate"] = np.clip(
+                df.loc[fault_slice, "error_rate"].values
+                + np.random.uniform(0.2, 0.6),
+                0, 1,
+            )
+            df.loc[fault_slice, "network_in"] = np.clip(
+                df.loc[fault_slice, "network_in"].values * 0.3, 0, None,
+            )
+
+        elif fault_type == "connection_pool_exhaustion":
+            df.loc[fault_slice, "latency"] = np.clip(
+                df.loc[fault_slice, "latency"].values
+                + np.random.uniform(300, 1000, fault_len),
+                0, None,
+            )
+            df.loc[fault_slice, "error_rate"] = np.clip(
+                df.loc[fault_slice, "error_rate"].values
+                + np.random.uniform(0.15, 0.5),
+                0, 1,
+            )
+            # Requests back up
+            df.loc[fault_slice, "request_rate"] = np.clip(
+                df.loc[fault_slice, "request_rate"].values * 0.4, 0, None,
+            )
+
+        elif fault_type == "thread_leak":
+            # CPU climbs gradually, latency grows
+            leak_ramp = np.linspace(0, np.random.uniform(20, 50), fault_len)
+            df.loc[fault_slice, "cpu_usage"] = np.clip(
+                df.loc[fault_slice, "cpu_usage"].values + leak_ramp,
+                0, 100,
+            )
+            df.loc[fault_slice, "latency"] = np.clip(
+                df.loc[fault_slice, "latency"].values
+                + np.random.uniform(50, 300, fault_len),
+                0, None,
+            )
+            df.loc[fault_slice, "error_rate"] = np.clip(
+                df.loc[fault_slice, "error_rate"].values
+                + np.random.uniform(0.05, 0.3),
+                0, 1,
+            )
+
+        elif fault_type == "config_error":
+            # Immediate error spike, some latency increase
+            df.loc[fault_slice, "error_rate"] = np.clip(
+                df.loc[fault_slice, "error_rate"].values
+                + np.random.uniform(0.2, 0.7),
+                0, 1,
+            )
+            df.loc[fault_slice, "latency"] = np.clip(
+                df.loc[fault_slice, "latency"].values
+                + np.random.uniform(50, 200, fault_len),
+                0, None,
+            )
+
+        elif fault_type == "dependency_failure":
+            # Downstream dependency dies — errors spike, latency goes up
+            df.loc[fault_slice, "error_rate"] = np.clip(
+                df.loc[fault_slice, "error_rate"].values
+                + np.random.uniform(0.2, 0.6),
+                0, 1,
+            )
+            df.loc[fault_slice, "latency"] = np.clip(
+                df.loc[fault_slice, "latency"].values
+                + np.random.uniform(200, 600, fault_len),
+                0, None,
+            )
+            df.loc[fault_slice, "request_rate"] = np.clip(
+                df.loc[fault_slice, "request_rate"].values * 0.5, 0, None,
+            )
+
         return df
 
     # ------------------------------------------------------------------
@@ -175,26 +297,25 @@ class FaultGenerator:
         """Generate metrics that simulate a fault in one microservice.
 
         Characteristics:
-            - Error rate increases by 0.1-0.5 on the faulty service.
+            - Error rate increases on the faulty service.
             - Sudden onset (step change) at a random point in the middle third.
             - Localised to a single service; others remain normal.
-            - CPU may spike on the faulty service independently of request_rate.
+            - Fault type determines which metrics are affected.
 
         Args:
             system: Name of the system.
-            fault_type: Type of fault to inject. Random from
-                ["cpu", "memory", "network", "latency", "error"] if not given.
+            fault_type: Type of fault to inject. Random from the 11 supported
+                types if not given.
             fault_service: Service to inject the fault into. Random (excluding
                 loadgenerator) if not given.
 
         Returns:
             Tuple of (list of ServiceMetrics, fault_service name, fault_type).
         """
-        fault_types = ["cpu", "memory", "network", "latency", "error"]
         eligible_services = [s for s in self.SERVICE_NAMES[: self.n_services] if s != "loadgenerator"]
 
         if fault_type is None:
-            fault_type = str(np.random.choice(fault_types))
+            fault_type = str(np.random.choice(self.FAULT_TYPES))
         if fault_service is None:
             fault_service = str(np.random.choice(eligible_services))
 
