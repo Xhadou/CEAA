@@ -29,7 +29,7 @@ def labels_to_int(labels, label_map=None):
     """
     if label_map is None:
         label_map = LABEL_TO_INT
-    return [label_map[l] for l in labels]
+    return [label_map[label] for label in labels]
 
 
 def int_to_labels(ints, label_map=None):
@@ -44,4 +44,4 @@ def int_to_labels(ints, label_map=None):
     """
     if label_map is None:
         label_map = INT_TO_LABEL
-    return [label_map[i] for i in ints]
+    return [label_map[int_label] for int_label in ints]
