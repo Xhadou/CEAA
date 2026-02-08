@@ -1,6 +1,7 @@
 """Main CAAA model combining temporal encoding with context integration."""
 
 import logging
+from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -101,3 +102,33 @@ class CAAAModel(nn.Module):
             logits = self.forward(x)
             probabilities = torch.softmax(logits, dim=-1)
             return torch.argmax(probabilities, dim=-1)
+
+    def predict_with_confidence(
+        self, x: torch.Tensor, confidence_threshold: float = 0.6
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Returns predictions with UNKNOWN class for low-confidence predictions.
+
+        The model produces 2-class predictions (FAULT/EXPECTED_LOAD). When the
+        max softmax probability is below ``confidence_threshold``, the prediction
+        is changed to class 2 (UNKNOWN). UNKNOWN is a post-hoc decision, not
+        a trained class.
+
+        Args:
+            x: Input tensor of shape (batch, input_dim).
+            confidence_threshold: Minimum softmax probability to accept a
+                prediction. Predictions below this become UNKNOWN (class 2).
+
+        Returns:
+            Tuple of (predictions, confidences) where:
+                - predictions: class indices of shape (batch,), with values
+                  in {0, 1, 2} (0=FAULT, 1=EXPECTED_LOAD, 2=UNKNOWN).
+                - confidences: max softmax probability for each sample,
+                  shape (batch,).
+        """
+        with torch.no_grad():
+            logits = self.forward(x)
+            probabilities = torch.softmax(logits, dim=-1)
+            confidences, predictions = torch.max(probabilities, dim=-1)
+            # Set low-confidence predictions to UNKNOWN (class 2)
+            predictions[confidences < confidence_threshold] = 2
+        return predictions, confidences

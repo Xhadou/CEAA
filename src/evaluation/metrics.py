@@ -82,32 +82,58 @@ def compute_all_metrics(
 ) -> Dict[str, float]:
     """Computes all evaluation metrics.
 
+    Handles 3 possible prediction classes: 0=FAULT, 1=EXPECTED_LOAD,
+    2=UNKNOWN. UNKNOWN predictions are excluded from precision/recall/F1
+    calculations. The unknown_rate metric tracks the fraction of UNKNOWN
+    predictions.
+
     Args:
-        y_true: Ground truth labels.
-        y_pred: Predicted labels.
+        y_true: Ground truth labels (values in {0, 1}).
+        y_pred: Predicted labels (values in {0, 1, 2}).
         baseline_fp_rate: Optional baseline false positive rate for
             computing FP reduction.
 
     Returns:
         Dictionary with:
-            - accuracy: Overall accuracy.
-            - precision: Weighted precision.
-            - recall: Weighted recall.
-            - f1: Weighted F1 score.
+            - accuracy: Overall accuracy (UNKNOWN counted as incorrect).
+            - precision: Weighted precision (on known predictions only).
+            - recall: Weighted recall (on known predictions only).
+            - f1: Weighted F1 score (on known predictions only).
             - fp_rate: False positive rate for FAULT class.
             - fault_recall: Recall for the fault class.
             - fp_reduction: FP reduction vs baseline (if baseline_fp_rate provided).
-            - attribution_accuracy: Same as accuracy for our binary case.
+            - attribution_accuracy: Same as accuracy.
+            - unknown_rate: Fraction of predictions that are UNKNOWN.
     """
+    unknown_mask = y_pred == 2
+    unknown_rate = float(unknown_mask.sum()) / len(y_pred) if len(y_pred) > 0 else 0.0
+    known_mask = ~unknown_mask
+
+    if known_mask.sum() > 0:
+        y_true_known = y_true[known_mask]
+        y_pred_known = y_pred[known_mask]
+        precision = precision_score(
+            y_true_known, y_pred_known, average="weighted", zero_division=0
+        )
+        recall = recall_score(
+            y_true_known, y_pred_known, average="weighted", zero_division=0
+        )
+        f1 = f1_score(
+            y_true_known, y_pred_known, average="weighted", zero_division=0
+        )
+    else:
+        precision = 0.0
+        recall = 0.0
+        f1 = 0.0
+
     metrics: Dict[str, float] = {
         "accuracy": accuracy_score(y_true, y_pred),
-        "precision": precision_score(
-            y_true, y_pred, average="weighted", zero_division=0
-        ),
-        "recall": recall_score(y_true, y_pred, average="weighted", zero_division=0),
-        "f1": f1_score(y_true, y_pred, average="weighted", zero_division=0),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
         "fp_rate": compute_false_positive_rate(y_true, y_pred),
         "fault_recall": compute_fault_recall(y_true, y_pred),
+        "unknown_rate": unknown_rate,
     }
 
     if baseline_fp_rate is not None:

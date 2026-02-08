@@ -1,7 +1,7 @@
 """Trainer for the CAAA model."""
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -218,6 +218,27 @@ class CAAATrainer:
         with torch.no_grad():
             preds = self.model.predict(X_t)
         return preds.cpu().numpy()
+
+    def predict_with_confidence(
+        self, X: np.ndarray, confidence_threshold: float = 0.6
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Returns predictions with UNKNOWN class for low-confidence cases.
+
+        Args:
+            X: Feature array of shape (n_samples, input_dim).
+            confidence_threshold: Minimum probability threshold. Below this,
+                predictions become class 2 (UNKNOWN).
+
+        Returns:
+            Tuple of (predictions, confidences) as numpy arrays.
+        """
+        X_t = torch.tensor(X, dtype=torch.float32, device=self.device)
+        self.model.eval()
+        with torch.no_grad():
+            preds, confs = self.model.predict_with_confidence(
+                X_t, confidence_threshold=confidence_threshold
+            )
+        return preds.cpu().numpy(), confs.cpu().numpy()
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         """Returns predicted probabilities.
