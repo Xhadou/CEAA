@@ -1,12 +1,20 @@
-"""Main CAAA Pipeline — end-to-end workflow for anomaly attribution.
+"""Main CAAA Pipeline — unified entry point supporting all model backends.
 
-Generates synthetic data, extracts features, trains the CAAA model,
-evaluates against baselines, and prints a results summary.
+This module provides a single ``run_pipeline()`` function that supports both
+the novel CAAA neural model and traditional sklearn classifiers. For quick
+experiments with the CAAA model alone, use ``scripts/train.py`` or
+``scripts/demo.py`` instead.
+
+Differences from scripts/train.py:
+    - Supports ``--model caaa|random_forest|gradient_boosting|mlp``
+    - Uses ``AnomalyClassifier`` for sklearn backends (with cross-validation,
+      save/load, string labels)
+    - Produces a unified results summary across model types
 
 Usage::
 
     python -m src.main --n-fault 50 --n-load 50 --model caaa
-    python -m src.main --model random_forest --output outputs/results
+    python -m src.main --n-fault 50 --n-load 50 --model random_forest
 """
 
 import argparse
@@ -19,6 +27,7 @@ import torch
 import yaml
 from sklearn.model_selection import train_test_split
 
+# Fallback for running without `pip install -e .`
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data_loader import generate_combined_dataset

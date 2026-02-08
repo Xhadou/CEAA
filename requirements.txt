@@ -11,6 +11,12 @@ torch>=2.0.0
 matplotlib>=3.7.0
 seaborn>=0.12.0
 
+# HTTP (required by download_data.py)
+requests>=2.31.0
+
+# Serialization (required by classifier.py)
+joblib>=1.3.0
+
 # Utilities
 tqdm>=4.65.0
 pyyaml>=6.0

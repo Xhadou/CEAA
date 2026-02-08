@@ -37,6 +37,13 @@ pip install -r requirements.txt
 
 **Requirements:** Python 3.9+, PyTorch 2.0+, scikit-learn 1.3+, NumPy, Pandas, SciPy, Matplotlib, Seaborn, PyYAML.
 
+## Data
+
+CAAA supports two data modes:
+
+1. **Synthetic data** (default): Generated on-the-fly via `generate_combined_dataset()` or `generate_research_dataset()`. No downloads required.
+2. **RCAEval benchmark data**: Real-world microservice failure traces from Zenodo. Download with `download_rcaeval_dataset()` and load with `RCAEvalLoader`.
+
 ## Quick Start
 
 ```bash
@@ -52,6 +59,13 @@ python scripts/train.py --config configs/config.yaml --baseline
 # Ablation study (systematic evaluation of model variants)
 python scripts/ablation.py --n-fault 50 --n-load 50 --epochs 30 --n-runs 5
 
+# Full pipeline (supports both CAAA and sklearn models)
+python -m src.main --n-fault 50 --n-load 50 --model caaa
+python -m src.main --n-fault 50 --n-load 50 --model random_forest
+
+# Download RCAEval dataset (requires network)
+python -c "from src.data_loader.download_data import download_rcaeval_dataset; download_rcaeval_dataset('RE1', ['online-boutique'])"
+
 # Run tests
 python -m pytest tests/ -v
 ```
@@ -59,36 +73,42 @@ python -m pytest tests/ -v
 ## Project Structure
 
 ```
-├── configs/config.yaml           # Training and model configuration
+├── configs/config.yaml               # Training and model configuration
 ├── src/
+│   ├── main.py                       # Unified pipeline entry point
 │   ├── data_loader/
-│   │   ├── data_types.py         # ServiceMetrics, AnomalyCase dataclasses
-│   │   ├── synthetic_generator.py # Normal & load-spike metric generation
-│   │   ├── fault_generator.py    # Fault injection simulation
-│   │   └── dataset.py            # Combined dataset generation
+│   │   ├── data_types.py             # ServiceMetrics, AnomalyCase dataclasses
+│   │   ├── synthetic_generator.py    # Normal & load-spike metric generation
+│   │   ├── fault_generator.py        # Fault injection (11 types)
+│   │   ├── dataset.py               # Combined & research dataset generation
+│   │   ├── download_data.py         # RCAEval dataset downloader
+│   │   └── rcaeval_loader.py        # RCAEval dataset parser
 │   ├── features/
-│   │   └── extractors.py         # 36-dimensional feature extraction
+│   │   └── extractors.py            # 36-dimensional feature extraction
 │   ├── models/
-│   │   ├── temporal_encoder.py   # MLP-based temporal encoder
-│   │   ├── context_module.py     # Context integration with attention & gating
-│   │   ├── caaa_model.py         # Full CAAA model
-│   │   └── baseline.py           # RandomForest & Naive baselines
+│   │   ├── temporal_encoder.py      # MLP-based temporal encoder
+│   │   ├── context_module.py        # Context integration with attention & gating
+│   │   ├── caaa_model.py            # Full CAAA model (novel)
+│   │   ├── classifier.py            # Multi-backend sklearn classifier
+│   │   └── baseline.py             # RandomForest & Naive baselines
 │   ├── training/
-│   │   ├── losses.py             # Context Consistency Loss
-│   │   └── trainer.py            # PyTorch training harness
+│   │   ├── losses.py               # Context Consistency Loss (novel)
+│   │   └── trainer.py              # PyTorch training harness
 │   └── evaluation/
-│       ├── metrics.py            # Evaluation metrics & FP reduction
-│       └── visualization.py      # Plotting utilities
+│       ├── metrics.py              # Evaluation metrics & FP reduction
+│       └── visualization.py        # Plotting utilities
 ├── scripts/
-│   ├── demo.py                   # Quick demonstration
-│   ├── train.py                  # Full training pipeline
-│   └── ablation.py               # Ablation study framework
+│   ├── demo.py                     # Quick demonstration
+│   ├── train.py                    # Full training pipeline
+│   └── ablation.py                 # Ablation study framework
 ├── tests/
-│   ├── test_data_loader.py       # Data generation tests
-│   ├── test_features.py          # Feature extraction tests
-│   ├── test_models.py            # Model component tests
-│   └── test_integration.py       # End-to-end pipeline tests
+│   ├── test_data_loader.py         # Data generation tests
+│   ├── test_features.py            # Feature extraction tests
+│   ├── test_models.py              # Model component tests
+│   ├── test_integration.py         # End-to-end pipeline tests
+│   └── test_plan_modules.py        # Sklearn classifier tests
 ├── requirements.txt
+├── .gitignore
 └── README.md
 ```
 

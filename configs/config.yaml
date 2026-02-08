@@ -36,12 +36,28 @@ features:
     - affected_service_ratio
     - variance_change_ratio
 
+  context_features:
+    - event_active
+    - event_expected_impact
+    - time_seasonality
+    - recent_deployment
+    - context_confidence
+
 model:
-  anomaly_detector:
-    type: "lstm_ae"
+  # NOTE: LSTM autoencoder is planned for future work.
+  # The current pipeline uses a single-stage classification approach.
+  # anomaly_detector:
+  #   type: "lstm_ae"
+  #   hidden_dim: 64
+  #   latent_dim: 16
+  #   num_layers: 2
+
+  caaa_model:
+    input_dim: 36
     hidden_dim: 64
-    latent_dim: 16
-    num_layers: 2
+    context_dim: 5
+    n_classes: 2
+    dropout: 0.1
 
   classifier:
     type: "random_forest"

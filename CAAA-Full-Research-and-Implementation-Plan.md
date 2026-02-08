@@ -1,4 +1,4 @@
-# CEAA: Context-Enriched Anomaly Attribution
+# CAAA: Context-Aware Anomaly Attribution
 ## Complete Implementation Plan for Coding Agent
 
 ---
