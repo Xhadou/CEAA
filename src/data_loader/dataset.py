@@ -3,6 +3,8 @@
 import logging
 from typing import List, Optional, Tuple
 
+import numpy as np
+
 from src.data_loader.data_types import AnomalyCase
 from src.data_loader.fault_generator import FaultGenerator
 from src.data_loader.synthetic_generator import SyntheticMetricsGenerator
@@ -44,12 +46,16 @@ def generate_combined_dataset(
         services, fault_service, fault_type = fault_gen.generate_fault_metrics(
             system=system
         )
+        fault_context = {}
+        if np.random.random() < 0.3:
+            fault_context["recent_deployment"] = True
         fault_cases.append(
             AnomalyCase(
                 case_id=f"fault_{i:04d}",
                 system=system,
                 label="FAULT",
                 services=services,
+                context=fault_context,
                 fault_service=fault_service,
                 fault_type=fault_type,
             )

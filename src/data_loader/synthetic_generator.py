@@ -206,5 +206,6 @@ class SyntheticMetricsGenerator:
             "spike_start": int(spike_start),
             "spike_end": int(spike_end),
             "ramp_length": int(ramp_len),
+            "event_name": f"{event_type}_event",
         }
         return results, context
