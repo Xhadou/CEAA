@@ -6,7 +6,7 @@ import numpy.testing as npt
 import torch
 import torch.nn as nn
 
-from src.models.temporal_encoder import TemporalEncoder
+from src.models.feature_encoder import FeatureEncoder
 from src.models.context_module import ContextIntegrationModule
 from src.models.caaa_model import CAAAModel
 from src.models.baseline import BaselineClassifier, NaiveBaseline
@@ -30,8 +30,8 @@ def feature_data():
 
 
 @pytest.fixture
-def temporal_encoder():
-    return TemporalEncoder(input_dim=36, hidden_dim=64)
+def feature_encoder():
+    return FeatureEncoder(input_dim=36, hidden_dim=64)
 
 
 @pytest.fixture
@@ -44,19 +44,19 @@ def caaa_model():
     return CAAAModel(input_dim=36, hidden_dim=64, context_dim=5, n_classes=2)
 
 
-# ── TemporalEncoder ──────────────────────────────────────────────────
+# ── FeatureEncoder ───────────────────────────────────────────────────
 
-class TestTemporalEncoder:
-    def test_temporal_encoder_output_shape(self, temporal_encoder):
+class TestFeatureEncoder:
+    def test_feature_encoder_output_shape(self, feature_encoder):
         x = torch.randn(4, 36)
-        temporal_encoder.eval()
-        out = temporal_encoder(x)
+        feature_encoder.eval()
+        out = feature_encoder(x)
         assert out.shape == (4, 64)
 
-    def test_temporal_encoder_single_sample(self, temporal_encoder):
+    def test_feature_encoder_single_sample(self, feature_encoder):
         x = torch.randn(1, 36)
-        temporal_encoder.eval()
-        out = temporal_encoder(x)
+        feature_encoder.eval()
+        out = feature_encoder(x)
         assert out.shape == (1, 64)
 
 

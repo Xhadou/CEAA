@@ -1,4 +1,4 @@
-"""Temporal encoder module for CAAA model."""
+"""Feature encoder module for CAAA model."""
 
 import logging
 from typing import Optional
@@ -9,11 +9,13 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 
 
-class TemporalEncoder(nn.Module):
-    """Processes feature vectors through temporal/sequential layers.
+class FeatureEncoder(nn.Module):
+    """Encodes the 36-dimensional feature vector into a dense hidden
+    representation via a multi-layer perceptron.
 
-    Takes a feature vector and passes it through a stack of
-    Linear + ReLU + Dropout layers to produce a temporal encoding.
+    Note: despite operating on features derived from time series, this
+    module does not perform sequential or temporal processing — temporal
+    patterns are captured in the feature extraction stage.
 
     Attributes:
         layers: Sequential stack of linear transformation layers.
@@ -26,7 +28,7 @@ class TemporalEncoder(nn.Module):
         num_layers: int = 2,
         dropout: float = 0.1,
     ) -> None:
-        """Initializes the TemporalEncoder.
+        """Initializes the FeatureEncoder.
 
         Args:
             input_dim: Dimensionality of input feature vectors.
@@ -54,12 +56,12 @@ class TemporalEncoder(nn.Module):
             ])
         self.layers = nn.Sequential(*layers)
         logger.debug(
-            "TemporalEncoder initialized: input_dim=%d, hidden_dim=%d, num_layers=%d",
+            "FeatureEncoder initialized: input_dim=%d, hidden_dim=%d, num_layers=%d",
             input_dim, hidden_dim, num_layers,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through the temporal encoder.
+        """Forward pass through the feature encoder.
 
         Args:
             x: Input tensor of shape (batch_size, input_dim).

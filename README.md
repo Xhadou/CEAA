@@ -15,7 +15,7 @@ The CAAA pipeline has an optional two-stage design:
    error. Enable with `--anomaly-detector` flag. Only anomalous windows proceed to Stage 2.
 2. **Stage 2: Anomaly Attribution** — The CAAA model classifies detected anomalies as
    FAULT, EXPECTED_LOAD, or UNKNOWN using:
-   - **Temporal Encoder**: MLP-based encoder → 64-dim representation
+   - **Feature Encoder**: MLP-based projection → 64-dim representation
    - **Context Integration Module**: Attention + confidence gating over 5 context features
    - **Classification Head**: 2-class logits + post-hoc UNKNOWN via confidence threshold
 
@@ -110,7 +110,7 @@ python scripts/ablation.py --data rcaeval --dataset RE1 --system online-boutique
 │   │   ├── feature_schema.py            # Single source of truth for feature layout
 │   │   └── extractors.py            # 36-dimensional feature extraction
 │   ├── models/
-│   │   ├── temporal_encoder.py      # MLP-based temporal encoder
+│   │   ├── feature_encoder.py       # MLP-based feature encoder
 │   │   ├── context_module.py        # Context integration with attention & gating
 │   │   ├── caaa_model.py            # Full CAAA model (novel)
 │   │   ├── anomaly_detector.py     # LSTM autoencoder anomaly detector
