@@ -18,6 +18,7 @@ Usage::
 """
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ import numpy as np
 import torch
 import yaml
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 # Fallback for running without `pip install -e .`
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -40,6 +42,15 @@ from src.evaluation.metrics import (
     compute_false_positive_rate,
     print_evaluation_summary,
 )
+
+
+def _setup_logging(level: str = "INFO") -> None:
+    """Configure root logger for the CAAA pipeline."""
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
 def run_pipeline(
@@ -185,6 +196,14 @@ def run_pipeline(
         X, labels, test_size=0.2, random_state=seed, stratify=labels,
     )
 
+    # Step 3b: Scale AFTER split (fit on train only) for neural models
+    scaler = None
+    if model_type in ("caaa", "mlp"):
+        print("  Applying StandardScaler (fit on train split only)...")
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_test = scaler.transform(X_test)
+
     # ------------------------------------------------------------------
     # Step 4: Train
     # ------------------------------------------------------------------
@@ -242,6 +261,7 @@ def run_pipeline(
 
 
 def main() -> None:
+    _setup_logging()
     parser = argparse.ArgumentParser(
         description="CAAA: Context-Aware Anomaly Attribution",
     )
@@ -292,12 +312,16 @@ def main() -> None:
 
     # Override from config file if provided
     if args.config:
-        with open(args.config) as f:
-            cfg = yaml.safe_load(f)
-        tc = cfg.get("training", {})
-        args.epochs = tc.get("epochs", args.epochs)
-        args.batch_size = tc.get("batch_size", args.batch_size)
-        args.lr = tc.get("learning_rate", args.lr)
+        config_path = Path(args.config)
+        if config_path.exists():
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f)
+            tc = cfg.get("training", {})
+            args.epochs = tc.get("epochs", args.epochs)
+            args.batch_size = tc.get("batch_size", args.batch_size)
+            args.lr = tc.get("learning_rate", args.lr)
+        else:
+            logging.warning("Config file %s not found; using CLI defaults.", args.config)
 
     if args.download_data:
         from src.data_loader.download_data import download_rcaeval_dataset

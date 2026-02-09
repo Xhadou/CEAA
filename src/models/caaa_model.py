@@ -6,6 +6,7 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 
+from src.features.feature_schema import CONTEXT_START, CONTEXT_END
 from src.models.context_module import ContextIntegrationModule
 from src.models.temporal_encoder import TemporalEncoder
 
@@ -76,8 +77,8 @@ class CAAAModel(nn.Module):
         Returns:
             Logits tensor of shape (batch, n_classes).
         """
-        # Split context features (indices 12:17)
-        context_features = x[:, 12:17]
+        # Split context features using centralized schema
+        context_features = x[:, CONTEXT_START:CONTEXT_END]
 
         # Temporal encoding of full feature vector
         temporal_encoding = self.temporal_encoder(x)

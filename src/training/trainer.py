@@ -8,14 +8,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from src.features.feature_schema import CONTEXT_START as _CONTEXT_START, CONTEXT_END as _CONTEXT_END
 from src.models import CAAAModel
 from src.training.losses import ContextConsistencyLoss
 
 logger = logging.getLogger(__name__)
-
-# Column indices for context features within the full feature vector
-_CONTEXT_START = 12
-_CONTEXT_END = 17
 
 
 class CAAATrainer:
@@ -23,6 +20,10 @@ class CAAATrainer:
 
     Handles training, evaluation, and prediction for the CAAAModel
     using PyTorch with Adam optimizer and CrossEntropyLoss.
+
+    **Important**: Input features should be standardized (zero mean, unit
+    variance) before passing to ``train()``. Use
+    ``sklearn.preprocessing.StandardScaler`` fitted on training data only.
 
     Attributes:
         model: The CAAAModel instance.

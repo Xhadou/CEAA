@@ -11,6 +11,7 @@ from src.evaluation.metrics import (
     compute_false_positive_rate,
 )
 from src.features import FeatureExtractor
+from src.features.feature_schema import CONTEXT_START, CONTEXT_END
 from src.models import CAAAModel, NaiveBaseline
 from src.training.losses import ContextConsistencyLoss
 from src.training.trainer import CAAATrainer
@@ -100,7 +101,7 @@ class TestAblationNoContext:
         X = extractor.extract_batch(all_cases).astype(np.float32)
 
         # Zero out context features
-        X[:, 12:17] = 0.0
+        X[:, CONTEXT_START:CONTEXT_END] = 0.0
 
         torch.manual_seed(123)
         model = CAAAModel(input_dim=36, hidden_dim=64, n_classes=2)
@@ -149,7 +150,7 @@ class TestContextConsistencyLoss:
         labels = torch.randint(0, 2, (8,))
 
         logits = model(x)
-        context = x[:, 12:17]
+        context = x[:, CONTEXT_START:CONTEXT_END]
         total_loss, _ = ccl(logits, labels, context)
         total_loss.backward()
 

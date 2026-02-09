@@ -130,6 +130,7 @@ class AnomalyDetector:
         epochs: int = 50,
         batch_size: int = 32,
         learning_rate: float = 0.001,
+        calibration_split: float = 0.2,
     ) -> None:
         """Train on normal-operation metrics.
 
@@ -138,6 +139,8 @@ class AnomalyDetector:
             epochs: Training epochs.
             batch_size: Mini-batch size.
             learning_rate: Adam learning rate.
+            calibration_split: Fraction of data held out for threshold
+                calibration (avoids data leakage).
         """
         # Fit scaler on concatenated data for consistent normalisation
         raw_parts = []
@@ -150,6 +153,13 @@ class AnomalyDetector:
         combined = self.scaler.transform(combined_raw)
         n_features = combined.shape[1]
 
+        # Split into train and calibration sets
+        n_cal = max(1, int(len(combined) * calibration_split))
+        n_train = len(combined) - n_cal
+        indices = np.random.permutation(len(combined))
+        train_data = combined[indices[:n_train]]
+        cal_data = combined[indices[n_train:]]
+
         self.model = LSTMAutoencoder(
             n_features=n_features,
             hidden_dim=self.hidden_dim,
@@ -157,7 +167,7 @@ class AnomalyDetector:
             num_layers=self.num_layers,
         ).to(self.device)
 
-        dataset = TimeSeriesDataset(combined, self.seq_length)
+        dataset = TimeSeriesDataset(train_data, self.seq_length)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         criterion = nn.MSELoss()
@@ -176,7 +186,8 @@ class AnomalyDetector:
             if (epoch + 1) % 10 == 0:
                 print(f"Epoch {epoch + 1}/{epochs}, Loss: {total_loss / max(len(loader), 1):.6f}")
 
-        self._compute_threshold(combined)
+        # Compute threshold on HELD-OUT calibration data (not training data)
+        self._compute_threshold(cal_data)
 
     # ------------------------------------------------------------------
     # Detection
