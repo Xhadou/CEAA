@@ -151,3 +151,72 @@ def generate_research_dataset(
     )
 
     return {"train": train, "val": val, "test": test}
+
+
+def generate_rcaeval_dataset(
+    dataset: str = "RE1",
+    system: str = "online-boutique",
+    n_load_per_fault: int = 1,
+    data_dir: str = "data/raw",
+    seed: int = 42,
+) -> Tuple[List[AnomalyCase], List[AnomalyCase]]:
+    """Load FAULT cases from RCAEval and generate matching EXPECTED_LOAD cases.
+
+    This is the intended research pipeline: real fault data from the RCAEval
+    benchmark paired with synthetic expected-load cases for attribution training.
+
+    Args:
+        dataset: RCAEval dataset identifier (``"RE1"`` or ``"RE2"``).
+        system: Microservice system (``"online-boutique"``, ``"sock-shop"``,
+            or ``"train-ticket"``).
+        n_load_per_fault: Number of synthetic load cases per fault case.
+        data_dir: Path to downloaded RCAEval data.
+        seed: Random seed.
+
+    Returns:
+        Tuple of (fault_cases, load_cases) as AnomalyCase lists.
+
+    Raises:
+        FileNotFoundError: If the RCAEval data has not been downloaded.
+            Call :func:`src.data_loader.download_data.download_rcaeval_dataset`
+            first.
+    """
+    from src.data_loader.rcaeval_loader import RCAEvalLoader
+
+    loader = RCAEvalLoader(data_dir=data_dir)
+    fault_cases = loader.load_dataset(dataset=dataset, system=system)
+
+    if not fault_cases:
+        raise FileNotFoundError(
+            f"No RCAEval data found at {data_dir}/{dataset}/{system}. "
+            f"Run: python -c \"from src.data_loader.download_data import "
+            f"download_rcaeval_dataset; download_rcaeval_dataset('{dataset}', "
+            f"['{system}'])\""
+        )
+
+    logger.info("Loaded %d fault cases from RCAEval %s/%s", len(fault_cases), dataset, system)
+
+    # Generate synthetic EXPECTED_LOAD cases
+    load_gen = SyntheticMetricsGenerator(seed=seed)
+    load_cases: List[AnomalyCase] = []
+
+    for i, fault_case in enumerate(fault_cases):
+        for j in range(n_load_per_fault):
+            services, context = load_gen.generate_load_spike_metrics(
+                system=fault_case.system,
+            )
+            load_cases.append(
+                AnomalyCase(
+                    case_id=f"load_rcaeval_{i:04d}_{j:02d}",
+                    system=fault_case.system,
+                    label="EXPECTED_LOAD",
+                    services=services,
+                    context=context,
+                )
+            )
+
+    logger.info(
+        "RCAEval dataset: %d real faults + %d synthetic loads = %d total",
+        len(fault_cases), len(load_cases), len(fault_cases) + len(load_cases),
+    )
+    return fault_cases, load_cases

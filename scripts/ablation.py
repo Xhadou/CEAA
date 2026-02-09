@@ -13,7 +13,7 @@ from sklearn.model_selection import train_test_split
 # Fallback for running without `pip install -e .`
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.data_loader import generate_combined_dataset
+from src.data_loader import generate_combined_dataset, generate_rcaeval_dataset
 from src.features import FeatureExtractor
 from src.models import CAAAModel, BaselineClassifier, NaiveBaseline
 from src.training.trainer import CAAATrainer
@@ -104,6 +104,23 @@ def main():
     parser.add_argument("--n-runs", type=int, default=5)
     parser.add_argument("--base-seed", type=int, default=42)
     parser.add_argument("--systems", nargs="+", default=["online-boutique"])
+
+    # Data source
+    parser.add_argument(
+        "--data", type=str, default="synthetic",
+        choices=["synthetic", "rcaeval"],
+        help="Data source: synthetic (default) or rcaeval (real faults)",
+    )
+    parser.add_argument("--dataset", type=str, default="RE1",
+                        choices=["RE1", "RE2"], help="RCAEval dataset")
+    parser.add_argument("--system", type=str, default="online-boutique",
+                        choices=["online-boutique", "sock-shop", "train-ticket"],
+                        help="Microservice system (for rcaeval)")
+    parser.add_argument("--load-ratio", type=int, default=1,
+                        help="Synthetic loads per RCAEval fault")
+    parser.add_argument("--data-dir", type=str, default="data/raw",
+                        help="RCAEval data directory")
+
     args = parser.parse_args()
 
     metrics_to_track = ["accuracy", "f1", "fp_rate", "fault_recall", "fp_reduction"]
@@ -130,10 +147,17 @@ def main():
         torch.manual_seed(run_seed)
 
         # Generate dataset
-        fault_cases, load_cases = generate_combined_dataset(
-            n_fault=args.n_fault, n_load=args.n_load,
-            systems=args.systems, seed=run_seed,
-        )
+        if args.data == "rcaeval":
+            fault_cases, load_cases = generate_rcaeval_dataset(
+                dataset=args.dataset, system=args.system,
+                n_load_per_fault=args.load_ratio,
+                data_dir=args.data_dir, seed=run_seed,
+            )
+        else:
+            fault_cases, load_cases = generate_combined_dataset(
+                n_fault=args.n_fault, n_load=args.n_load,
+                systems=args.systems, seed=run_seed,
+            )
         all_cases = fault_cases + load_cases
         labels = np.array([0 if c.label == "FAULT" else 1 for c in all_cases])
 

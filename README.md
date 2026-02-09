@@ -8,11 +8,16 @@ CAAA (Context-Aware Anomaly Attribution) is a research framework that classifies
 
 ## Architecture
 
-The CAAA model consists of three main components:
+The CAAA pipeline has an optional two-stage design:
 
-1. **Temporal Encoder**: An MLP-based encoder that processes the full 36-dimensional feature vector into a 64-dim hidden representation.
-2. **Context Integration Module**: A novel attention-based module that integrates 5 context features (event_active, event_expected_impact, time_seasonality, recent_deployment, context_confidence) with the temporal encoding via context-aware attention and confidence gating.
-3. **Classification Head**: A feedforward network producing 2-class logits (FAULT / EXPECTED_LOAD), with an optional post-hoc UNKNOWN class for low-confidence predictions.
+1. **Stage 1 (Optional): Anomaly Detection** — An LSTM autoencoder trained on normal
+   (expected-load) metrics identifies which time windows are anomalous via reconstruction
+   error. Only anomalous windows proceed to Stage 2.
+2. **Stage 2: Anomaly Attribution** — The CAAA model classifies detected anomalies as
+   FAULT, EXPECTED_LOAD, or UNKNOWN using:
+   - **Temporal Encoder**: MLP-based encoder → 64-dim representation
+   - **Context Integration Module**: Attention + confidence gating over 5 context features
+   - **Classification Head**: 2-class logits + post-hoc UNKNOWN via confidence threshold
 
 The **Context Consistency Loss** combines:
 - Standard cross-entropy classification loss
@@ -70,6 +75,24 @@ python -c "from src.data_loader.download_data import download_rcaeval_dataset; d
 python -m pytest tests/ -v
 ```
 
+### Using RCAEval Real-World Data
+
+```bash
+# Download RCAEval dataset (one-time, requires network)
+python -m src.main --download-data --dataset RE1 --system online-boutique
+
+# Train with real fault data + synthetic expected-load cases
+python -m src.main --data rcaeval --dataset RE1 --system online-boutique --model caaa
+
+# Full pipeline with anomaly detection pre-stage
+python -m src.main --data rcaeval --dataset RE1 --system online-boutique \
+    --model caaa --anomaly-detector --ad-epochs 50
+
+# Ablation on real data
+python scripts/ablation.py --data rcaeval --dataset RE1 --system online-boutique \
+    --epochs 50 --n-runs 10
+```
+
 ## Project Structure
 
 ```
@@ -89,6 +112,7 @@ python -m pytest tests/ -v
 │   │   ├── temporal_encoder.py      # MLP-based temporal encoder
 │   │   ├── context_module.py        # Context integration with attention & gating
 │   │   ├── caaa_model.py            # Full CAAA model (novel)
+│   │   ├── anomaly_detector.py     # LSTM autoencoder anomaly detector
 │   │   ├── classifier.py            # Multi-backend sklearn classifier
 │   │   └── baseline.py             # RandomForest & Naive baselines
 │   ├── training/

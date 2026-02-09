@@ -30,9 +30,10 @@ from sklearn.model_selection import train_test_split
 # Fallback for running without `pip install -e .`
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.data_loader import generate_combined_dataset
+from src.data_loader import generate_combined_dataset, generate_rcaeval_dataset
 from src.features import FeatureExtractor
 from src.models import CAAAModel, BaselineClassifier, NaiveBaseline
+from src.models.anomaly_detector import AnomalyDetector
 from src.training.trainer import CAAATrainer
 from src.evaluation.metrics import (
     compute_all_metrics,
@@ -51,6 +52,16 @@ def run_pipeline(
     systems: list = None,
     seed: int = 42,
     output_dir: str = "outputs/results",
+    # RCAEval data params
+    data_source: str = "synthetic",
+    dataset: str = "RE1",
+    system: str = "online-boutique",
+    n_load_per_fault: int = 1,
+    data_dir: str = "data/raw",
+    # Anomaly detector params
+    use_anomaly_detector: bool = False,
+    ad_epochs: int = 50,
+    ad_threshold_percentile: float = 95,
 ) -> dict:
     """Run the complete CAAA pipeline.
 
@@ -64,6 +75,14 @@ def run_pipeline(
         systems: Microservice system names.
         seed: Random seed.
         output_dir: Directory for saved results.
+        data_source: ``"synthetic"`` or ``"rcaeval"``.
+        dataset: RCAEval dataset identifier (``"RE1"`` or ``"RE2"``).
+        system: Microservice system for RCAEval.
+        n_load_per_fault: Synthetic loads per RCAEval fault case.
+        data_dir: Path to downloaded RCAEval data.
+        use_anomaly_detector: Enable LSTM-AE anomaly detection pre-stage.
+        ad_epochs: Anomaly detector training epochs.
+        ad_threshold_percentile: Anomaly detector threshold percentile.
 
     Returns:
         Dictionary of evaluation metrics.
@@ -84,12 +103,69 @@ def run_pipeline(
     print(f"  Epochs:       {epochs}")
 
     # ------------------------------------------------------------------
-    # Step 1: Generate dataset
+    # Step 1: Load data
     # ------------------------------------------------------------------
-    print("\n[1/5] Generating dataset...")
-    fault_cases, load_cases = generate_combined_dataset(
-        n_fault=n_fault, n_load=n_load, systems=systems, seed=seed,
-    )
+    print(f"\n[1/5] Loading data (source: {data_source})...")
+
+    if data_source == "rcaeval":
+        fault_cases, load_cases = generate_rcaeval_dataset(
+            dataset=dataset,
+            system=system,
+            n_load_per_fault=n_load_per_fault,
+            data_dir=data_dir,
+            seed=seed,
+        )
+        print(f"  RCAEval: {len(fault_cases)} real faults + {len(load_cases)} synthetic loads")
+    else:
+        fault_cases, load_cases = generate_combined_dataset(
+            n_fault=n_fault, n_load=n_load, systems=systems, seed=seed,
+        )
+        print(f"  Synthetic: {len(fault_cases)} faults + {len(load_cases)} loads")
+
+    # ------------------------------------------------------------------
+    # Step 1b (optional): Anomaly detection pre-filter
+    # ------------------------------------------------------------------
+    if use_anomaly_detector:
+        print(f"\n  Training anomaly detector (LSTM-AE)...")
+
+        # Use load cases as "normal" training data for the autoencoder
+        normal_metrics = []
+        for case in load_cases:
+            for svc in case.services:
+                normal_metrics.append(svc.metrics)
+
+        detector = AnomalyDetector(
+            hidden_dim=64,
+            latent_dim=16,
+            seq_length=min(30, min(len(m) for m in normal_metrics) - 1),
+            threshold_percentile=ad_threshold_percentile,
+        )
+        detector.fit(normal_metrics, epochs=ad_epochs, batch_size=batch_size)
+
+        # Score all cases — anomalous cases proceed to attribution
+        all_cases = fault_cases + load_cases
+        detected_cases = []
+        detected_labels = []
+        missed = 0
+
+        for case in all_cases:
+            # Use first service's metrics for detection
+            _, max_score = detector.detect(case.services[0].metrics)
+            if max_score > 1.0:
+                detected_cases.append(case)
+                detected_labels.append(case.label)
+            else:
+                missed += 1
+
+        print(f"  Anomaly detector: {len(detected_cases)} detected, {missed} filtered as normal")
+        print(f"  Detection breakdown: "
+              f"{sum(1 for l in detected_labels if l == 'FAULT')} faults, "
+              f"{sum(1 for l in detected_labels if l == 'EXPECTED_LOAD')} loads detected")
+
+        # Split back into fault/load for feature extraction
+        fault_cases = [c for c in detected_cases if c.label == "FAULT"]
+        load_cases = [c for c in detected_cases if c.label == "EXPECTED_LOAD"]
+
     all_cases = fault_cases + load_cases
     labels = np.array([0 if c.label == "FAULT" else 1 for c in all_cases])
     print(f"  {len(fault_cases)} faults, {len(load_cases)} load spikes")
@@ -183,6 +259,35 @@ def main() -> None:
     parser.add_argument("--systems", nargs="+", default=["online-boutique"])
     parser.add_argument("--output", type=str, default="outputs/results")
     parser.add_argument("--config", type=str, default=None)
+
+    # Data source
+    parser.add_argument(
+        "--data", type=str, default="synthetic",
+        choices=["synthetic", "rcaeval"],
+        help="Data source: synthetic (default) or rcaeval (real faults)",
+    )
+    parser.add_argument("--dataset", type=str, default="RE1",
+                        choices=["RE1", "RE2"], help="RCAEval dataset")
+    parser.add_argument("--system", type=str, default="online-boutique",
+                        choices=["online-boutique", "sock-shop", "train-ticket"],
+                        help="Microservice system (for rcaeval)")
+    parser.add_argument("--load-ratio", type=int, default=1,
+                        help="Synthetic loads per RCAEval fault")
+    parser.add_argument("--data-dir", type=str, default="data/raw",
+                        help="RCAEval data directory")
+
+    # Anomaly detector
+    parser.add_argument("--anomaly-detector", action="store_true",
+                        help="Enable LSTM-AE anomaly detection pre-stage")
+    parser.add_argument("--ad-epochs", type=int, default=50,
+                        help="Anomaly detector training epochs")
+    parser.add_argument("--ad-threshold", type=float, default=95,
+                        help="Anomaly detector threshold percentile")
+
+    # Download helper
+    parser.add_argument("--download-data", action="store_true",
+                        help="Download RCAEval dataset and exit")
+
     args = parser.parse_args()
 
     # Override from config file if provided
@@ -194,6 +299,11 @@ def main() -> None:
         args.batch_size = tc.get("batch_size", args.batch_size)
         args.lr = tc.get("learning_rate", args.lr)
 
+    if args.download_data:
+        from src.data_loader.download_data import download_rcaeval_dataset
+        download_rcaeval_dataset(args.dataset, [args.system], args.data_dir)
+        return
+
     run_pipeline(
         n_fault=args.n_fault,
         n_load=args.n_load,
@@ -204,6 +314,14 @@ def main() -> None:
         systems=args.systems,
         seed=args.seed,
         output_dir=args.output,
+        data_source=args.data,
+        dataset=args.dataset,
+        system=args.system,
+        n_load_per_fault=args.load_ratio,
+        data_dir=args.data_dir,
+        use_anomaly_detector=args.anomaly_detector,
+        ad_epochs=args.ad_epochs,
+        ad_threshold_percentile=args.ad_threshold,
     )
 
 
