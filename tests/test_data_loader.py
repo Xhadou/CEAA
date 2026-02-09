@@ -317,6 +317,6 @@ class TestResearchDataset:
         event_types_seen = {
             c.context.get("event_type")
             for c in all_cases
-            if c.label == "EXPECTED_LOAD"
+            if c.label == "EXPECTED_LOAD" and c.context.get("event_type") is not None
         }
         assert event_types_seen == set(EVENT_TYPES)
