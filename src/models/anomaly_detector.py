@@ -156,7 +156,8 @@ class AnomalyDetector:
         # Split into train and calibration sets
         n_cal = max(1, int(len(combined) * calibration_split))
         n_train = len(combined) - n_cal
-        indices = np.random.permutation(len(combined))
+        rng = np.random.RandomState(42)
+        indices = rng.permutation(len(combined))
         train_data = combined[indices[:n_train]]
         cal_data = combined[indices[n_train:]]
 
