@@ -13,7 +13,7 @@ from sklearn.model_selection import train_test_split
 # Fallback for running without `pip install -e .`
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.data_loader import generate_combined_dataset
+from src.data_loader import generate_combined_dataset, generate_rcaeval_dataset
 from src.features import FeatureExtractor
 from src.models import CAAAModel, BaselineClassifier, NaiveBaseline
 from src.training.trainer import CAAATrainer
@@ -35,6 +35,31 @@ def main():
     parser.add_argument("--baseline", action="store_true", help="Also train and compare with BaselineClassifier")
     parser.add_argument("--systems", nargs="+", default=["online-boutique"])
     parser.add_argument("--config", type=str, default=None, help="Path to config YAML file")
+
+    # Data source
+    parser.add_argument(
+        "--data", type=str, default="synthetic",
+        choices=["synthetic", "rcaeval"],
+        help="Data source: synthetic (default) or rcaeval (real faults)",
+    )
+    parser.add_argument("--dataset", type=str, default="RE1",
+                        choices=["RE1", "RE2"], help="RCAEval dataset")
+    parser.add_argument("--system", type=str, default="online-boutique",
+                        choices=["online-boutique", "sock-shop", "train-ticket"],
+                        help="Microservice system (for rcaeval)")
+    parser.add_argument("--load-ratio", type=int, default=1,
+                        help="Synthetic loads per RCAEval fault")
+    parser.add_argument("--data-dir", type=str, default="data/raw",
+                        help="RCAEval data directory")
+
+    # Anomaly detector
+    parser.add_argument("--anomaly-detector", action="store_true",
+                        help="Enable LSTM-AE anomaly detection pre-stage")
+    parser.add_argument("--ad-epochs", type=int, default=50,
+                        help="Anomaly detector training epochs")
+    parser.add_argument("--ad-threshold", type=float, default=95,
+                        help="Anomaly detector threshold percentile")
+
     args = parser.parse_args()
 
     # Load config if provided
@@ -61,10 +86,41 @@ def main():
     print("=" * 50)
 
     # Generate dataset
-    fault_cases, load_cases = generate_combined_dataset(
-        n_fault=args.n_fault, n_load=args.n_load,
-        systems=args.systems, seed=args.seed,
-    )
+    if args.data == "rcaeval":
+        fault_cases, load_cases = generate_rcaeval_dataset(
+            dataset=args.dataset, system=args.system,
+            n_load_per_fault=args.load_ratio,
+            data_dir=args.data_dir, seed=args.seed,
+        )
+    else:
+        fault_cases, load_cases = generate_combined_dataset(
+            n_fault=args.n_fault, n_load=args.n_load,
+            systems=args.systems, seed=args.seed,
+        )
+
+    # Optional anomaly detection pre-filter
+    if args.anomaly_detector:
+        from src.models.anomaly_detector import AnomalyDetector
+
+        print("Training anomaly detector (LSTM-AE)...")
+        normal_metrics = [svc.metrics for c in load_cases for svc in c.services]
+        detector = AnomalyDetector(
+            hidden_dim=64, latent_dim=16,
+            seq_length=min(30, min(len(m) for m in normal_metrics) - 1),
+            threshold_percentile=args.ad_threshold,
+        )
+        detector.fit(normal_metrics, epochs=args.ad_epochs, batch_size=args.batch_size)
+
+        all_pre = fault_cases + load_cases
+        detected = []
+        for case in all_pre:
+            _, max_score = detector.detect(case.services[0].metrics)
+            if max_score > 1.0:
+                detected.append(case)
+        fault_cases = [c for c in detected if c.label == "FAULT"]
+        load_cases = [c for c in detected if c.label == "EXPECTED_LOAD"]
+        print(f"Anomaly detector kept {len(fault_cases)} faults, {len(load_cases)} loads")
+
     all_cases = fault_cases + load_cases
     labels = np.array([0 if c.label == "FAULT" else 1 for c in all_cases])
     print(f"Dataset: {len(fault_cases)} faults, {len(load_cases)} load spikes")
