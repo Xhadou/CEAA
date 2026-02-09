@@ -16,9 +16,8 @@ data:
 features:
   window_size: 60
   stride: 10
-  n_workload: 6
-  n_behavioral: 6
-  n_context: 5
+  # Feature counts are defined in src/features/feature_schema.py
+  # n_workload: 6, n_behavioral: 6, n_context: 5, n_statistical: 13, n_service_level: 6
 
   workload_features:
     - global_load_ratio
@@ -44,13 +43,16 @@ features:
     - context_confidence
 
 model:
-  # NOTE: LSTM autoencoder is planned for future work.
-  # The current pipeline uses a single-stage classification approach.
-  # anomaly_detector:
-  #   type: "lstm_ae"
-  #   hidden_dim: 64
-  #   latent_dim: 16
-  #   num_layers: 2
+  # LSTM autoencoder for optional pre-stage anomaly detection.
+  # Enable via --anomaly-detector flag in main.py / train.py.
+  anomaly_detector:
+    type: "lstm_ae"
+    hidden_dim: 64
+    latent_dim: 16
+    num_layers: 2
+    seq_length: 30
+    threshold_percentile: 95
+    calibration_split: 0.2
 
   caaa_model:
     input_dim: 36

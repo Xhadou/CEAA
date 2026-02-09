@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
+from src.features.feature_schema import FEATURE_GROUPS as _FEATURE_GROUPS
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,13 +38,7 @@ _FEATURE_GROUP_COLORS = {
     "service-level": "#9b59b6",
 }
 
-_FEATURE_GROUPS = {
-    "workload": list(range(0, 6)),
-    "behavioral": list(range(6, 12)),
-    "context": list(range(12, 17)),
-    "statistical": list(range(17, 30)),
-    "service-level": list(range(30, 36)),
-}
+
 
 
 def plot_confusion_matrix(

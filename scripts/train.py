@@ -2,6 +2,7 @@
 """CAAA Training - Full training script with baseline comparison."""
 
 import argparse
+import logging
 import sys
 import os
 
@@ -9,6 +10,7 @@ import numpy as np
 import yaml
 import torch
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 # Fallback for running without `pip install -e .`
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -25,6 +27,12 @@ from src.evaluation.metrics import (
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
     parser = argparse.ArgumentParser(description="CAAA Full Training")
     parser.add_argument("--n-fault", type=int, default=50)
     parser.add_argument("--n-load", type=int, default=50)
@@ -134,6 +142,11 @@ def main():
     X_train, X_test, y_train, y_test = train_test_split(
         X, labels, test_size=0.2, random_state=args.seed, stratify=labels,
     )
+
+    # Scale features (fit on train only) for neural models
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
 
     # Train CAAA model
     print(f"Training CAAA model for {args.epochs} epochs...")

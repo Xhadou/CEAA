@@ -12,7 +12,7 @@ The CAAA pipeline has an optional two-stage design:
 
 1. **Stage 1 (Optional): Anomaly Detection** — An LSTM autoencoder trained on normal
    (expected-load) metrics identifies which time windows are anomalous via reconstruction
-   error. Only anomalous windows proceed to Stage 2.
+   error. Enable with `--anomaly-detector` flag. Only anomalous windows proceed to Stage 2.
 2. **Stage 2: Anomaly Attribution** — The CAAA model classifies detected anomalies as
    FAULT, EXPECTED_LOAD, or UNKNOWN using:
    - **Temporal Encoder**: MLP-based encoder → 64-dim representation
@@ -107,6 +107,7 @@ python scripts/ablation.py --data rcaeval --dataset RE1 --system online-boutique
 │   │   ├── download_data.py         # RCAEval dataset downloader
 │   │   └── rcaeval_loader.py        # RCAEval dataset parser
 │   ├── features/
+│   │   ├── feature_schema.py            # Single source of truth for feature layout
 │   │   └── extractors.py            # 36-dimensional feature extraction
 │   ├── models/
 │   │   ├── temporal_encoder.py      # MLP-based temporal encoder

@@ -13,61 +13,17 @@ import pandas as pd
 from scipy.stats import pearsonr
 
 from src.data_loader.data_types import AnomalyCase, ServiceMetrics
-
-logger = logging.getLogger(__name__)
-
-# Feature names by group
-_WORKLOAD_NAMES = [
-    "global_load_ratio",
-    "cpu_request_correlation",
-    "cross_service_sync",
-    "error_rate_delta",
-    "latency_cpu_correlation",
-    "memory_trend_uniformity",
-]
-
-_BEHAVIORAL_NAMES = [
-    "onset_gradient",
-    "peak_duration",
-    "cascade_score",
-    "recovery_indicator",
-    "affected_service_ratio",
-    "variance_change_ratio",
-]
-
-_CONTEXT_NAMES = [
-    "event_active",
-    "event_expected_impact",
-    "time_seasonality",
-    "recent_deployment",
-    "context_confidence",
-]
-
-_STAT_METRIC_COLS = [
-    "cpu_usage",
-    "memory_usage",
-    "request_rate",
-    "error_rate",
-    "latency",
-    "network_in",
-]
-
-_STATISTICAL_NAMES = (
-    [f"mean_{c}" for c in _STAT_METRIC_COLS]
-    + [f"std_{c}" for c in _STAT_METRIC_COLS]
-    + ["max_error_rate"]
+from src.features.feature_schema import (
+    WORKLOAD_NAMES as _WORKLOAD_NAMES,
+    BEHAVIORAL_NAMES as _BEHAVIORAL_NAMES,
+    CONTEXT_NAMES as _CONTEXT_NAMES,
+    STAT_METRIC_COLS as _STAT_METRIC_COLS,
+    STATISTICAL_NAMES as _STATISTICAL_NAMES,
+    SERVICE_LEVEL_NAMES as _SERVICE_LEVEL_NAMES,
+    N_FEATURES,
 )
 
-_SERVICE_LEVEL_NAMES = [
-    "n_services",
-    "max_cpu_service_ratio",
-    "max_error_service_ratio",
-    "cpu_spread",
-    "error_spread",
-    "latency_spread",
-]
-
-N_FEATURES = 36
+logger = logging.getLogger(__name__)
 
 
 def _safe_pearsonr(x: np.ndarray, y: np.ndarray) -> float:
