@@ -386,7 +386,7 @@ def plot_shap_summary(
     if isinstance(shap_values, list):
         shap_values = shap_values[1]
 
-    fig, ax = plt.subplots(figsize=(10, 10))
+    fig = plt.figure(figsize=(10, 10))
     shap.summary_plot(
         shap_values, X_test, feature_names=feature_names,
         show=False, plot_size=None,

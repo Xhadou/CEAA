@@ -256,7 +256,9 @@ class CAAATrainer:
 
         def eval_fn():
             optimizer.zero_grad()
-            scaled = logits / temperature
+            # Clamp to avoid division by zero or negative temperature
+            t = temperature.clamp(min=0.01)
+            scaled = logits / t
             loss = nn.CrossEntropyLoss()(scaled, y_t)
             loss.backward()
             return loss
