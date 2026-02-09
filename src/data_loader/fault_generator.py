@@ -26,6 +26,27 @@ FAULT_TYPES: List[str] = [
     "dependency_failure",
 ]
 
+# Mapping from synthetic fault type names to RCAEval short names.
+# RCAEval uses: cpu, mem, disk, delay, loss, socket
+# Synthetic types without a direct RCAEval equivalent map to the closest match.
+FAULT_TYPE_TO_RCAEVAL = {
+    "cpu_hog": "cpu",
+    "memory_leak": "mem",
+    "network_delay": "delay",
+    "packet_loss": "loss",
+    "disk_io": "disk",
+    "pod_failure": "socket",
+    "dns_failure": "socket",
+    "connection_pool_exhaustion": "socket",
+    "thread_leak": "cpu",
+    "config_error": "cpu",
+    "dependency_failure": "delay",
+}
+
+RCAEVAL_TO_FAULT_TYPES = {}
+for synthetic, rcaeval in FAULT_TYPE_TO_RCAEVAL.items():
+    RCAEVAL_TO_FAULT_TYPES.setdefault(rcaeval, []).append(synthetic)
+
 
 class FaultGenerator:
     """Generates metrics that simulate fault injection in a microservice system.

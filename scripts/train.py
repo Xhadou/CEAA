@@ -10,6 +10,7 @@ import yaml
 import torch
 from sklearn.model_selection import train_test_split
 
+# Fallback for running without `pip install -e .`
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data_loader import generate_combined_dataset

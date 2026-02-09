@@ -1,8 +1,14 @@
-"""Anomaly classifier: FAULT vs EXPECTED_LOAD vs UNKNOWN.
+"""Multi-backend sklearn classifier for anomaly attribution.
 
-This is the CORE novel component — a multi-model sklearn classifier
-that supports RandomForest, GradientBoosting, and MLP backends with
-confidence-based UNKNOWN predictions.
+Supports RandomForest, GradientBoosting, and MLP backends with
+confidence-based UNKNOWN predictions, cross-validation, and
+model persistence via joblib.
+
+Note:
+    This is a traditional ML baseline/comparison classifier.
+    The novel research contributions are in ``caaa_model.py``
+    (ContextIntegrationModule with attention and confidence gating)
+    and ``losses.py`` (Context Consistency Loss).
 """
 
 import logging
@@ -166,6 +172,10 @@ class AnomalyClassifier:
 
         Returns:
             Tuple of (predictions array, confidence scores array).
+
+        See Also:
+            :meth:`src.models.caaa_model.CAAAModel.predict_with_confidence`
+                for the PyTorch-based equivalent using integer labels.
         """
         probas = self.predict_proba(X)
         predictions: List[str] = []

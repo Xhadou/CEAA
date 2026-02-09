@@ -124,6 +124,10 @@ class CAAAModel(nn.Module):
                   in {0, 1, 2} (0=FAULT, 1=EXPECTED_LOAD, 2=UNKNOWN).
                 - confidences: max softmax probability for each sample,
                   shape (batch,).
+
+        See Also:
+            :meth:`src.models.classifier.AnomalyClassifier.predict_with_confidence`
+                for the sklearn-based equivalent using string labels.
         """
         with torch.no_grad():
             logits = self.forward(x)

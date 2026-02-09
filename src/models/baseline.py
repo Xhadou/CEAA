@@ -9,10 +9,14 @@ logger = logging.getLogger(__name__)
 
 
 class BaselineClassifier:
-    """Baseline classifier using sklearn RandomForest - no context awareness.
+    """Simple RandomForest baseline for ablation comparisons.
 
-    Uses all features without special context integration, serving as
-    a comparison baseline for the context-aware CAAA model.
+    Uses integer labels (0=FAULT, 1=EXPECTED_LOAD) and numpy arrays.
+    Used by ``scripts/ablation.py`` for systematic variant comparison.
+
+    For a more feature-rich sklearn classifier with string labels,
+    cross-validation, model persistence, and multi-backend support,
+    see :class:`src.models.classifier.AnomalyClassifier`.
 
     Attributes:
         model: Underlying RandomForestClassifier instance.
