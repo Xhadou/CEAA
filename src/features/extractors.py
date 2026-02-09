@@ -53,17 +53,20 @@ def _linear_slope(arr: np.ndarray) -> float:
 
 
 def _detect_change_point(
-    series: np.ndarray, method: str = "pelt", penalty: float = 10,
+    series: np.ndarray, penalty: float = 10,
 ) -> Tuple[int, float, float]:
     """Detect the most significant change point in a time series.
 
-    Uses the PELT algorithm (Killick 2012) for O(n) change point detection,
-    inspired by BARO (FSE 2024) which showed that change point detection
-    before RCA improves results significantly.
+    Uses the PELT algorithm (Killick 2012) for O(n) change point detection
+    with an RBF cost model, inspired by BARO (FSE 2024) which showed that
+    change point detection before RCA improves results significantly.
+
+    The RBF (Radial Basis Function) kernel is chosen because it can detect
+    changes in both mean and variance simultaneously — important for fault
+    signals that may shift the distribution shape, not just the mean.
 
     Args:
         series: 1-D array of metric values.
-        method: Detection method (only ``"pelt"`` is currently supported).
         penalty: Penalty value for PELT.  Higher values produce fewer change
             points.
 
@@ -89,7 +92,9 @@ def _detect_change_point(
     if not change_points:
         return -1, 0.0, 0.0
 
-    # Find the most significant change point
+    # Find the most significant change point.  We skip change points within
+    # 3 indices of the edges to ensure stable mean/gradient estimates on
+    # both sides of the split.
     best_cp, best_magnitude = -1, 0.0
     for cp in change_points:
         if cp < 3 or cp > len(series) - 3:
