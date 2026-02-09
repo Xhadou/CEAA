@@ -99,10 +99,10 @@ def generate_combined_dataset(
 
     # Optionally replace 20% of cases with hard/adversarial scenarios
     if include_hard:
-        n_hard_fault = max(1, int(n_fault * 0.10))  # 5% each of 2 fault types
-        n_hard_load = max(1, int(n_load * 0.10))    # 5% each of 2 load types
+        n_hard_fault = max(1, int(n_fault * 0.10))  # 10% of faults per hard fault type
+        n_hard_load = max(1, int(n_load * 0.10))    # 10% of loads per hard load type
         hard_fault, hard_load = generate_hard_dataset(
-            n_per_type=max(1, min(n_hard_fault, n_hard_load) // 2),
+            n_per_type=max(1, max(n_hard_fault, n_hard_load) // 2),
             systems=systems,
             seed=seed + 100,
         )
@@ -408,7 +408,9 @@ def generate_hard_dataset(
         system = systems[i % len(systems)]
         services, context = load_gen.generate_load_spike_metrics(system=system)
         # Reset most services to baseline (keep only 3-4 affected)
-        n_affected = np.random.randint(3, min(5, len(services) + 1))
+        n_affected = np.random.randint(
+            min(3, len(services)), min(5, len(services)) + 1,
+        )
         affected_indices = set(
             np.random.choice(len(services), size=n_affected, replace=False)
         )

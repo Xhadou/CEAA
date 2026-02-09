@@ -363,9 +363,9 @@ class TestHardDataset:
     def test_fault_during_event_has_context(self):
         """FAULT_DURING_EVENT cases should have event_type in context."""
         fault_cases, _ = generate_hard_dataset(n_per_type=3, seed=42)
-        # First n_per_type cases are fault_during_event
-        for case in fault_cases[:3]:
-            assert "hard_fault_during_event" in case.case_id
+        fde_cases = [c for c in fault_cases if "fault_during_event" in c.case_id]
+        assert len(fde_cases) == 3
+        for case in fde_cases:
             assert "event_type" in case.context
             assert case.fault_service is not None
             assert case.fault_type is not None
@@ -373,23 +373,26 @@ class TestHardDataset:
     def test_capacity_exceeded_has_high_multiplier(self):
         """CAPACITY_EXCEEDED_LOAD cases should have multiplier >= 5."""
         _, load_cases = generate_hard_dataset(n_per_type=3, seed=42)
-        for case in load_cases[:3]:
-            assert "hard_capacity_exceeded" in case.case_id
+        ce_cases = [c for c in load_cases if "capacity_exceeded" in c.case_id]
+        assert len(ce_cases) == 3
+        for case in ce_cases:
             assert case.context.get("load_multiplier", 0) >= 5.0
 
     def test_gradual_fault_has_fault_info(self):
         """GRADUAL_FAULT cases should have fault_service and fault_type."""
         fault_cases, _ = generate_hard_dataset(n_per_type=3, seed=42)
-        for case in fault_cases[3:]:
-            assert "hard_gradual_fault" in case.case_id
+        gf_cases = [c for c in fault_cases if "gradual_fault" in c.case_id]
+        assert len(gf_cases) == 3
+        for case in gf_cases:
             assert case.fault_service is not None
             assert case.fault_type is not None
 
     def test_partial_load_has_context(self):
         """PARTIAL_LOAD cases should have event context."""
         _, load_cases = generate_hard_dataset(n_per_type=3, seed=42)
-        for case in load_cases[3:]:
-            assert "hard_partial_load" in case.case_id
+        pl_cases = [c for c in load_cases if "partial_load" in c.case_id]
+        assert len(pl_cases) == 3
+        for case in pl_cases:
             assert "event_type" in case.context
 
     def test_hard_scenario_types_constant(self):
