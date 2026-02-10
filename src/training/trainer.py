@@ -10,7 +10,7 @@ import torch.nn as nn
 
 from src.features.feature_schema import CONTEXT_START as _CONTEXT_START, CONTEXT_END as _CONTEXT_END
 from src.models import CAAAModel
-from src.training.losses import ContextConsistencyLoss
+from src.training.losses import ContextConsistencyLoss, SupConContextLoss
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ class CAAATrainer:
         weight_decay: float = 1e-4,
         device: str = "cpu",
         use_context_loss: bool = True,
+        loss_type: str = "context_consistency",
     ) -> None:
         """Initializes the CAAATrainer.
 
@@ -48,18 +49,33 @@ class CAAATrainer:
             weight_decay: Weight decay (L2 regularization) for the optimizer.
             device: Device to run computations on ('cpu' or 'cuda').
             use_context_loss: Whether to use ContextConsistencyLoss.
+                Ignored when *loss_type* is explicitly set to a value other
+                than ``"context_consistency"``.
+            loss_type: Loss function variant:
+                ``"context_consistency"`` — ContextConsistencyLoss (default).
+                ``"contrastive"`` — SupConContextLoss.
+                ``"cross_entropy"`` — plain CrossEntropyLoss.
         """
         self.device = device
         self.model = model.to(self.device)
-        self.use_context_loss = use_context_loss
+        self.loss_type = loss_type
+
+        # Backward compat: use_context_loss=False overrides to cross_entropy
+        if not use_context_loss and loss_type == "context_consistency":
+            self.loss_type = "cross_entropy"
+
+        self.use_context_loss = self.loss_type == "context_consistency"
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=learning_rate, weight_decay=weight_decay
         )
-        if self.use_context_loss:
+        if self.loss_type == "contrastive":
+            self.criterion = SupConContextLoss()
+        elif self.loss_type == "context_consistency":
             self.criterion = ContextConsistencyLoss()
         else:
             self.criterion = nn.CrossEntropyLoss()
         self.temperature = 1.0  # default: no scaling; updated by calibrate_temperature()
+        self._class_centroids: Optional[np.ndarray] = None
 
     def train(
         self,
@@ -99,6 +115,9 @@ class CAAATrainer:
             history["cls_loss"] = []
             history["consistency_loss"] = []
             history["calibration_loss"] = []
+        elif self.loss_type == "contrastive":
+            history["contrastive_loss"] = []
+            history["cls_loss"] = []
         if has_val:
             history["val_loss"] = []
 
@@ -113,6 +132,7 @@ class CAAATrainer:
             epoch_cls_loss = 0.0
             epoch_consistency_loss = 0.0
             epoch_calibration_loss = 0.0
+            epoch_contrastive_loss = 0.0
             n_batches = 0
 
             indices = torch.randperm(n_samples, device=self.device)
@@ -123,7 +143,13 @@ class CAAATrainer:
 
                 self.optimizer.zero_grad()
                 logits = self.model(X_batch)
-                if self.use_context_loss:
+                if self.loss_type == "contrastive":
+                    context = X_batch[:, _CONTEXT_START:_CONTEXT_END]
+                    embeddings = self.model.get_embeddings(X_batch)
+                    loss, components = self.criterion(
+                        embeddings, logits, y_batch, context,
+                    )
+                elif self.use_context_loss:
                     context = X_batch[:, _CONTEXT_START:_CONTEXT_END]
                     loss, components = self.criterion(logits, y_batch, context)
                 else:
@@ -136,6 +162,9 @@ class CAAATrainer:
                     epoch_cls_loss += components["cls_loss"]
                     epoch_consistency_loss += components["consistency_loss"]
                     epoch_calibration_loss += components["calibration_loss"]
+                elif self.loss_type == "contrastive":
+                    epoch_contrastive_loss += components["contrastive_loss"]
+                    epoch_cls_loss += components["cls_loss"]
                 n_batches += 1
 
             avg_train_loss = epoch_loss / max(n_batches, 1)
@@ -148,6 +177,11 @@ class CAAATrainer:
                 history["calibration_loss"].append(
                     epoch_calibration_loss / max(n_batches, 1)
                 )
+            elif self.loss_type == "contrastive":
+                history["contrastive_loss"].append(
+                    epoch_contrastive_loss / max(n_batches, 1)
+                )
+                history["cls_loss"].append(epoch_cls_loss / max(n_batches, 1))
 
             if has_val:
                 val_loss = self._compute_loss(X_val_t, y_val_t)
@@ -269,13 +303,59 @@ class CAAATrainer:
         return self.temperature
 
     def predict_with_confidence(
-        self, X: np.ndarray, confidence_threshold: float = 0.6
+        self,
+        X: np.ndarray,
+        base_threshold: float = 0.7,
+        context_sensitivity: float = 0.2,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Returns predictions with UNKNOWN class for low-confidence cases.
+        """Predict with context-adaptive UNKNOWN thresholding.
+
+        The effective per-sample threshold is::
+
+            threshold = base_threshold + context_sensitivity * (context_confidence - 0.5)
+
+        When *context_confidence* is high (0.8+) the threshold rises and the
+        model is more decisive (fewer UNKNOWN).  When *context_confidence* is
+        low (0.2−) the threshold drops and the model is more cautious (more
+        UNKNOWN).
+
+        Inspired by USAD's tunable anomaly score (KDD 2020).
 
         When ``calibrate_temperature()`` has been called, logits are divided
-        by the learned temperature before applying softmax, producing
-        better-calibrated confidence estimates.
+        by the learned temperature before applying softmax.
+
+        Args:
+            X: Feature array of shape (n_samples, input_dim).
+            base_threshold: Base confidence threshold.
+            context_sensitivity: How much context_confidence shifts the
+                threshold around *base_threshold*.
+
+        Returns:
+            Tuple of (predictions, confidences) as numpy arrays.
+        """
+        X_t = torch.tensor(X, dtype=torch.float32, device=self.device)
+        self.model.eval()
+        with torch.no_grad():
+            logits = self.model(X_t)
+            scaled_logits = logits / self.temperature
+            probabilities = torch.softmax(scaled_logits, dim=-1)
+            confidences, predictions = torch.max(probabilities, dim=-1)
+
+            # Context-adaptive threshold
+            ctx_conf = X_t[:, _CONTEXT_END - 1]  # context_confidence feature
+            threshold = base_threshold + context_sensitivity * (ctx_conf - 0.5)
+            threshold = torch.clamp(threshold, 0.5, 0.95)
+
+            predictions[confidences < threshold] = 2
+        return predictions.cpu().numpy(), confidences.cpu().numpy()
+
+    def predict_with_confidence_fixed(
+        self, X: np.ndarray, confidence_threshold: float = 0.6
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Predict with a fixed (non-adaptive) confidence threshold.
+
+        Provided for backward compatibility and ablation studies comparing
+        fixed vs adaptive thresholding.
 
         Args:
             X: Feature array of shape (n_samples, input_dim).
@@ -294,6 +374,77 @@ class CAAATrainer:
             confidences, predictions = torch.max(probabilities, dim=-1)
             predictions[confidences < confidence_threshold] = 2
         return predictions.cpu().numpy(), confidences.cpu().numpy()
+
+    def predict_with_embeddings(
+        self,
+        X: np.ndarray,
+        distance_threshold: float = 1.5,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Classify using embedding cluster distances.
+
+        Computes cosine distance from each sample's embedding to pre-computed
+        class centroids.  If the nearest centroid is farther than
+        *distance_threshold*, the prediction is UNKNOWN (class 2).
+
+        Call :meth:`compute_class_centroids` after training to set up the
+        centroids from training data.
+
+        Args:
+            X: Feature array of shape (n_samples, input_dim).
+            distance_threshold: Maximum cosine distance to nearest centroid.
+                Samples beyond this become UNKNOWN.
+
+        Returns:
+            Tuple of (predictions, distances) where distances is the cosine
+            distance to the nearest centroid.
+        """
+        if self._class_centroids is None:
+            raise RuntimeError(
+                "Class centroids not computed. Call compute_class_centroids() "
+                "after training."
+            )
+
+        X_t = torch.tensor(X, dtype=torch.float32, device=self.device)
+        self.model.eval()
+        with torch.no_grad():
+            emb = self.model.get_embeddings(X_t)
+            emb = torch.nn.functional.normalize(emb, dim=1)
+
+        centroids = torch.tensor(
+            self._class_centroids, dtype=torch.float32, device=self.device
+        )
+        # Cosine distance: 1 - cosine_similarity
+        cos_sim = torch.matmul(emb, centroids.T)  # (n, n_classes)
+        distances = 1.0 - cos_sim  # (n, n_classes)
+
+        min_dist, predictions = torch.min(distances, dim=1)
+        predictions[min_dist > distance_threshold] = 2
+
+        return predictions.cpu().numpy(), min_dist.cpu().numpy()
+
+    def compute_class_centroids(self, X_train: np.ndarray, y_train: np.ndarray) -> None:
+        """Compute mean embedding per class from training data.
+
+        Must be called after training and before
+        :meth:`predict_with_embeddings`.
+
+        Args:
+            X_train: Training features of shape (n_samples, input_dim).
+            y_train: Training labels of shape (n_samples,).
+        """
+        X_t = torch.tensor(X_train, dtype=torch.float32, device=self.device)
+        self.model.eval()
+        with torch.no_grad():
+            emb = self.model.get_embeddings(X_t)
+            emb = torch.nn.functional.normalize(emb, dim=1)
+
+        centroids = []
+        for cls in sorted(set(y_train.tolist())):
+            mask = torch.tensor(y_train == cls, device=self.device)
+            cls_emb = emb[mask].mean(dim=0)
+            cls_emb = torch.nn.functional.normalize(cls_emb, dim=0)
+            centroids.append(cls_emb.cpu().numpy())
+        self._class_centroids = np.stack(centroids)
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         """Returns predicted probabilities.
@@ -356,7 +507,11 @@ class CAAATrainer:
         self.model.eval()
         with torch.no_grad():
             logits = self.model(X_t)
-            if self.use_context_loss:
+            if self.loss_type == "contrastive":
+                context = X_t[:, _CONTEXT_START:_CONTEXT_END]
+                embeddings = self.model.get_embeddings(X_t)
+                loss, _ = self.criterion(embeddings, logits, y_t, context)
+            elif self.use_context_loss:
                 context = X_t[:, _CONTEXT_START:_CONTEXT_END]
                 loss, _ = self.criterion(logits, y_t, context)
             else:

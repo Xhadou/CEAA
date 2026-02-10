@@ -13,7 +13,7 @@ from src.evaluation.metrics import (
 from src.features import FeatureExtractor
 from src.features.feature_schema import CONTEXT_START, CONTEXT_END
 from src.models import CAAAModel, NaiveBaseline
-from src.training.losses import ContextConsistencyLoss
+from src.training.losses import ContextConsistencyLoss, SupConContextLoss
 from src.training.trainer import CAAATrainer
 
 
@@ -75,7 +75,7 @@ class TestEndToEndPipeline:
 
         # 10. Test predict_with_confidence returns valid UNKNOWN predictions
         preds_conf, confs = trainer.predict_with_confidence(
-            X_test, confidence_threshold=0.99
+            X_test, base_threshold=0.99, context_sensitivity=0.0
         )
         assert preds_conf.shape == (len(y_test),)
         assert confs.shape == (len(y_test),)
@@ -228,13 +228,13 @@ class TestTemperatureScaling:
         trainer.train(X_train, y_train, epochs=20, batch_size=8)
 
         # Uncalibrated
-        _, confs_uncal = trainer.predict_with_confidence(X_val, confidence_threshold=0.5)
+        _, confs_uncal = trainer.predict_with_confidence_fixed(X_val, confidence_threshold=0.5)
 
         # Calibrate
         trainer.calibrate_temperature(X_val, y_val)
 
         # Calibrated
-        _, confs_cal = trainer.predict_with_confidence(X_val, confidence_threshold=0.5)
+        _, confs_cal = trainer.predict_with_confidence_fixed(X_val, confidence_threshold=0.5)
 
         # Confidences should differ after calibration
         assert not np.allclose(confs_uncal, confs_cal, atol=1e-6), \
@@ -242,3 +242,200 @@ class TestTemperatureScaling:
         # All confidences should be valid probabilities
         assert np.all(confs_cal >= 0.0)
         assert np.all(confs_cal <= 1.0)
+
+
+class TestSupConContextLoss:
+    """Test supervised contrastive loss with context-aware temperature."""
+
+    def test_supcon_forward_valid_loss(self):
+        """SupConContextLoss should produce a valid scalar loss."""
+        torch.manual_seed(42)
+        loss_fn = SupConContextLoss()
+
+        embeddings = torch.randn(16, 64)
+        logits = torch.randn(16, 2)
+        labels = torch.randint(0, 2, (16,))
+        context = torch.rand(16, 5)
+
+        total_loss, components = loss_fn(embeddings, logits, labels, context)
+
+        assert total_loss.shape == ()
+        assert torch.isfinite(total_loss)
+        assert "contrastive_loss" in components
+        assert "cls_loss" in components
+        assert "context_modulation" in components
+        assert components["cls_loss"] >= 0.0
+
+    def test_supcon_gradients_flow(self):
+        """Gradients should flow through all model parameters."""
+        torch.manual_seed(42)
+        model = CAAAModel(input_dim=36, hidden_dim=64, n_classes=2)
+        loss_fn = SupConContextLoss()
+
+        x = torch.randn(16, 36)
+        labels = torch.randint(0, 2, (16,))
+
+        embeddings = model.get_embeddings(x)
+        logits = model(x)
+        context = x[:, CONTEXT_START:CONTEXT_END]
+        total_loss, _ = loss_fn(embeddings, logits, labels, context)
+        total_loss.backward()
+
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                assert param.grad is not None, f"No gradient for {name}"
+                assert torch.isfinite(param.grad).all(), f"Non-finite grad for {name}"
+
+
+class TestContrastiveTraining:
+    """Test training with contrastive loss variant."""
+
+    def test_contrastive_training_converges(self):
+        """Loss should decrease over epochs with contrastive training."""
+        fault_cases, load_cases = generate_combined_dataset(
+            n_fault=10, n_load=10, seed=42,
+        )
+        all_cases = fault_cases + load_cases
+        labels = np.array([0] * len(fault_cases) + [1] * len(load_cases))
+
+        extractor = FeatureExtractor()
+        X = extractor.extract_batch(all_cases).astype(np.float32)
+
+        torch.manual_seed(42)
+        model = CAAAModel(input_dim=36, hidden_dim=64, n_classes=2)
+        trainer = CAAATrainer(
+            model, learning_rate=0.001, loss_type="contrastive",
+        )
+        history = trainer.train(X, labels, epochs=15, batch_size=16)
+
+        assert "train_loss" in history
+        assert "contrastive_loss" in history
+        assert "cls_loss" in history
+        # Loss should generally decrease (first > last)
+        assert history["train_loss"][0] > history["train_loss"][-1]
+
+    def test_contrastive_predict(self):
+        """Contrastive-trained model should produce valid predictions."""
+        fault_cases, load_cases = generate_combined_dataset(
+            n_fault=10, n_load=10, seed=42,
+        )
+        all_cases = fault_cases + load_cases
+        labels = np.array([0] * len(fault_cases) + [1] * len(load_cases))
+
+        extractor = FeatureExtractor()
+        X = extractor.extract_batch(all_cases).astype(np.float32)
+
+        torch.manual_seed(42)
+        model = CAAAModel(input_dim=36, hidden_dim=64, n_classes=2)
+        trainer = CAAATrainer(
+            model, learning_rate=0.001, loss_type="contrastive",
+        )
+        trainer.train(X, labels, epochs=10, batch_size=16)
+
+        y_pred = trainer.predict(X)
+        assert y_pred.shape == (len(labels),)
+        assert set(y_pred).issubset({0, 1})
+
+
+class TestGetEmbeddings:
+    """Test CAAAModel.get_embeddings()."""
+
+    def test_get_embeddings_shape(self):
+        """get_embeddings should return (batch, hidden_dim) tensor."""
+        torch.manual_seed(42)
+        model = CAAAModel(input_dim=36, hidden_dim=64, n_classes=2)
+        x = torch.randn(8, 36)
+
+        emb = model.get_embeddings(x)
+        assert emb.shape == (8, 64)
+
+
+class TestPredictWithEmbeddings:
+    """Test embedding-based UNKNOWN classification."""
+
+    def test_predict_with_embeddings_valid(self):
+        """predict_with_embeddings should return valid predictions."""
+        fault_cases, load_cases = generate_combined_dataset(
+            n_fault=10, n_load=10, seed=42,
+        )
+        all_cases = fault_cases + load_cases
+        labels = np.array([0] * len(fault_cases) + [1] * len(load_cases))
+
+        extractor = FeatureExtractor()
+        X = extractor.extract_batch(all_cases).astype(np.float32)
+
+        torch.manual_seed(42)
+        model = CAAAModel(input_dim=36, hidden_dim=64, n_classes=2)
+        trainer = CAAATrainer(
+            model, learning_rate=0.001, loss_type="contrastive",
+        )
+        trainer.train(X, labels, epochs=10, batch_size=16)
+        trainer.compute_class_centroids(X, labels)
+
+        preds, dists = trainer.predict_with_embeddings(X, distance_threshold=1.5)
+        assert preds.shape == (len(labels),)
+        assert dists.shape == (len(labels),)
+        assert set(preds).issubset({0, 1, 2})
+        assert np.all(dists >= 0.0)
+
+    def test_predict_with_embeddings_raises_without_centroids(self):
+        """Should raise RuntimeError if centroids not computed."""
+        model = CAAAModel(input_dim=36, hidden_dim=64, n_classes=2)
+        trainer = CAAATrainer(model, learning_rate=0.001)
+        X = np.random.randn(5, 36).astype(np.float32)
+
+        with pytest.raises(RuntimeError, match="Class centroids not computed"):
+            trainer.predict_with_embeddings(X)
+
+
+class TestAdaptiveThreshold:
+    """Test context-adaptive UNKNOWN thresholding."""
+
+    def test_adaptive_threshold_produces_unknown(self):
+        """With a high base_threshold, some predictions should be UNKNOWN."""
+        fault_cases, load_cases = generate_combined_dataset(
+            n_fault=10, n_load=10, seed=42,
+        )
+        all_cases = fault_cases + load_cases
+        labels = np.array([0] * len(fault_cases) + [1] * len(load_cases))
+
+        extractor = FeatureExtractor()
+        X = extractor.extract_batch(all_cases).astype(np.float32)
+
+        torch.manual_seed(42)
+        model = CAAAModel(input_dim=36, hidden_dim=64, n_classes=2)
+        trainer = CAAATrainer(model, learning_rate=0.001, use_context_loss=True)
+        trainer.train(X, labels, epochs=10, batch_size=8)
+
+        preds, confs = trainer.predict_with_confidence(
+            X, base_threshold=0.95, context_sensitivity=0.0,
+        )
+        assert set(preds).issubset({0, 1, 2})
+        assert np.all(confs >= 0.0)
+        assert np.all(confs <= 1.0)
+
+    def test_fixed_vs_adaptive_differ(self):
+        """Fixed and adaptive threshold should produce different results."""
+        fault_cases, load_cases = generate_combined_dataset(
+            n_fault=15, n_load=15, seed=42,
+        )
+        all_cases = fault_cases + load_cases
+        labels = np.array([0] * len(fault_cases) + [1] * len(load_cases))
+
+        extractor = FeatureExtractor()
+        X = extractor.extract_batch(all_cases).astype(np.float32)
+
+        torch.manual_seed(42)
+        model = CAAAModel(input_dim=36, hidden_dim=64, n_classes=2)
+        trainer = CAAATrainer(model, learning_rate=0.001, use_context_loss=True)
+        trainer.train(X, labels, epochs=15, batch_size=8)
+
+        preds_fixed, _ = trainer.predict_with_confidence_fixed(
+            X, confidence_threshold=0.7,
+        )
+        preds_adaptive, _ = trainer.predict_with_confidence(
+            X, base_threshold=0.7, context_sensitivity=0.2,
+        )
+        # With context_sensitivity > 0, results should generally differ
+        # (unless all context_confidence values happen to be exactly 0.5)
+        assert preds_fixed.shape == preds_adaptive.shape

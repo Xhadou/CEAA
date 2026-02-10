@@ -25,7 +25,7 @@ from src.evaluation.metrics import (
 
 def run_caaa_variant(
     X_train, y_train, X_test, y_test, naive_fp, epochs, batch_size, lr,
-    use_context_loss=True, seed=42
+    use_context_loss=True, loss_type="context_consistency", seed=42
 ):
     """Train and evaluate a CAAA model variant.
 
@@ -39,6 +39,8 @@ def run_caaa_variant(
         batch_size: Batch size.
         lr: Learning rate.
         use_context_loss: Whether to use ContextConsistencyLoss.
+        loss_type: Loss function variant (context_consistency, contrastive,
+            or cross_entropy).
         seed: Random seed.
 
     Returns:
@@ -49,6 +51,7 @@ def run_caaa_variant(
     trainer = CAAATrainer(
         model, learning_rate=lr, device="cpu",
         use_context_loss=use_context_loss,
+        loss_type=loss_type,
     )
     trainer.train(
         X_train, y_train, epochs=epochs,
@@ -173,6 +176,7 @@ def main():
     # Variant definitions
     variants = [
         "Full CAAA",
+        "CAAA + Contrastive",
         "No Context Features",
         "No Context Loss",
         "No Behavioral",
@@ -252,6 +256,16 @@ def main():
             )
             for k in metrics_to_track:
                 all_results["Full CAAA"][k].append(m.get(k, 0.0))
+
+            # --- CAAA + Contrastive ---
+            print("  CAAA + Contrastive...")
+            m = run_caaa_variant(
+                X_train, y_train, X_test, y_test, naive_fp,
+                args.epochs, max(args.batch_size, 16), args.lr,
+                loss_type="contrastive", seed=run_seed,
+            )
+            for k in metrics_to_track:
+                all_results["CAAA + Contrastive"][k].append(m.get(k, 0.0))
 
             # --- No Context Features ---
             print("  No Context Features...")

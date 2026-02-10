@@ -92,6 +92,25 @@ class CAAAModel(nn.Module):
         logits = self.classifier(integrated)
         return logits
 
+    def get_embeddings(self, x: torch.Tensor) -> torch.Tensor:
+        """Return intermediate embeddings before the classifier head.
+
+        These embeddings live in the ``hidden_dim``-dimensional space
+        produced by the feature encoder + context integration module.
+        They are used by the supervised contrastive loss to build a
+        representation space where same-class samples cluster together.
+
+        Args:
+            x: Input tensor of shape (batch, input_dim).
+
+        Returns:
+            Embedding tensor of shape (batch, hidden_dim).
+        """
+        context_features = x[:, CONTEXT_START:CONTEXT_END]
+        encoded_features = self.feature_encoder(x)
+        integrated = self.context_module(encoded_features, context_features)
+        return integrated
+
     def predict(self, x: torch.Tensor) -> torch.Tensor:
         """Returns class predictions (argmax of softmax).
 
