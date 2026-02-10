@@ -2,7 +2,6 @@
 
 import pytest
 import numpy as np
-import numpy.testing as npt
 
 from src.data_loader.dataset import generate_combined_dataset
 from src.data_loader.data_types import AnomalyCase
@@ -13,9 +12,9 @@ from src.features.extractors import FeatureExtractor, N_FEATURES
 
 @pytest.fixture(scope="module")
 def dataset():
-    """Generate a small dataset for feature tests."""
+    """Generate a dataset for feature tests (large enough for majority checks)."""
     fault_cases, load_cases = generate_combined_dataset(
-        n_fault=5, n_load=5, seed=42
+        n_fault=30, n_load=30, seed=42
     )
     return fault_cases, load_cases
 
@@ -49,7 +48,6 @@ class TestFeatureExtractorBatch:
         all_cases = fault_cases + load_cases
         feats = extractor.extract_batch(all_cases)
         assert feats.shape == (len(all_cases), N_FEATURES)
-        assert feats.shape == (10, 36)
 
 
 # ── Feature names ─────────────────────────────────────────────────────
@@ -80,10 +78,14 @@ class TestFaultVsLoad:
         err_idx = names.index("error_rate_delta")
         assert np.mean(fault_feats[:, err_idx]) > np.mean(load_feats[:, err_idx])
 
-        # event_active should differ: load=1.0, fault=0.0
+        # event_active: majority (>80%) of load cases should have event_active > 0.5
+        # and majority (>80%) of fault cases should have event_active < 0.5
+        # (no longer universally 1.0 / 0.0 due to label-leakage prevention)
         event_idx = names.index("event_active")
-        npt.assert_array_equal(load_feats[:, event_idx], 1.0)
-        npt.assert_array_equal(fault_feats[:, event_idx], 0.0)
+        load_active_frac = np.mean(load_feats[:, event_idx] > 0.5)
+        fault_inactive_frac = np.mean(fault_feats[:, event_idx] < 0.5)
+        assert load_active_frac >= 0.80
+        assert fault_inactive_frac >= 0.80
 
 
 # ── Context features ─────────────────────────────────────────────────
@@ -95,16 +97,54 @@ class TestContextFeatures:
         event_idx = names.index("event_active")
         conf_idx = names.index("context_confidence")
 
+        # Majority (>80%) of load cases should have event_active == 1.0
+        # (some may have empty context due to label-leakage prevention)
+        active_count = 0
         for case in load_cases:
             feats = extractor.extract(case)
-            assert feats[event_idx] == 1.0
-            assert feats[conf_idx] > 0
+            if feats[event_idx] == 1.0:
+                active_count += 1
+        assert active_count / len(load_cases) >= 0.80
 
     def test_context_features_for_fault(self, extractor, dataset):
         fault_cases, _ = dataset
         names = extractor.feature_names()
         event_idx = names.index("event_active")
 
+        # Majority (>80%) of fault cases should have event_active == 0.0
+        # (some may have fake context due to label-leakage prevention)
+        inactive_count = 0
         for case in fault_cases:
             feats = extractor.extract(case)
-            assert feats[event_idx] == 0.0
+            if feats[event_idx] == 0.0:
+                inactive_count += 1
+        assert inactive_count / len(fault_cases) >= 0.80
+
+
+# ── Change point features ────────────────────────────────────────────
+
+class TestChangePointFeatures:
+    def test_onset_gradient_computed_for_all_cases(self, extractor, dataset):
+        """onset_gradient should be a finite number for all cases."""
+        fault_cases, load_cases = dataset
+        names = extractor.feature_names()
+        onset_idx = names.index("onset_gradient")
+        for case in fault_cases + load_cases:
+            feats = extractor.extract(case)
+            assert np.isfinite(feats[onset_idx]), "onset_gradient is not finite"
+
+    def test_change_point_magnitude_computed_for_all_cases(self, extractor, dataset):
+        """change_point_magnitude should be a finite number for all cases."""
+        fault_cases, load_cases = dataset
+        names = extractor.feature_names()
+        mag_idx = names.index("change_point_magnitude")
+        for case in fault_cases + load_cases:
+            feats = extractor.extract(case)
+            assert np.isfinite(feats[mag_idx]), "change_point_magnitude is not finite"
+            assert feats[mag_idx] >= 0.0, "change_point_magnitude should be non-negative"
+
+    def test_change_point_magnitude_in_schema(self, extractor):
+        """change_point_magnitude should replace memory_trend_uniformity."""
+        names = extractor.feature_names()
+        assert "change_point_magnitude" in names
+        assert "memory_trend_uniformity" not in names

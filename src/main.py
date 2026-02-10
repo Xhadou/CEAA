@@ -34,12 +34,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data_loader import generate_combined_dataset, generate_rcaeval_dataset
 from src.features import FeatureExtractor
-from src.models import CAAAModel, BaselineClassifier, NaiveBaseline
+from src.models import CAAAModel, BaselineClassifier, NaiveBaseline, RuleBasedBaseline, XGBoostBaseline
 from src.models.anomaly_detector import AnomalyDetector
 from src.training.trainer import CAAATrainer
 from src.evaluation.metrics import (
     compute_all_metrics,
     compute_false_positive_rate,
+    cross_validate_model,
     print_evaluation_summary,
 )
 
@@ -73,6 +74,10 @@ def run_pipeline(
     use_anomaly_detector: bool = False,
     ad_epochs: int = 50,
     ad_threshold_percentile: float = 95,
+    # Hard scenarios
+    include_hard: bool = False,
+    # Cross-validation
+    cv_folds: int = 1,
 ) -> dict:
     """Run the complete CAAA pipeline.
 
@@ -94,6 +99,8 @@ def run_pipeline(
         use_anomaly_detector: Enable LSTM-AE anomaly detection pre-stage.
         ad_epochs: Anomaly detector training epochs.
         ad_threshold_percentile: Anomaly detector threshold percentile.
+        include_hard: Include hard/adversarial scenarios in dataset.
+        cv_folds: Number of cross-validation folds (1 = single split).
 
     Returns:
         Dictionary of evaluation metrics.
@@ -130,6 +137,7 @@ def run_pipeline(
     else:
         fault_cases, load_cases = generate_combined_dataset(
             n_fault=n_fault, n_load=n_load, systems=systems, seed=seed,
+            include_hard=include_hard,
         )
         print(f"  Synthetic: {len(fault_cases)} faults + {len(load_cases)} loads")
 
@@ -190,7 +198,49 @@ def run_pipeline(
     print(f"  Feature matrix: {X.shape}")
 
     # ------------------------------------------------------------------
-    # Step 3: Split
+    # Cross-validation path (when cv_folds > 1)
+    # ------------------------------------------------------------------
+    if cv_folds > 1:
+        print(f"\n[3/5] Running {cv_folds}-fold cross-validation ({model_type})...")
+
+        def _model_factory():
+            if model_type == "xgboost":
+                return XGBoostBaseline(random_state=seed)
+            elif model_type == "rule_based":
+                return RuleBasedBaseline()
+            elif model_type in ("random_forest",):
+                return BaselineClassifier(random_state=seed)
+            else:
+                raise ValueError(
+                    f"CV not supported for model_type={model_type!r}; "
+                    "use cv_folds=1 for CAAA neural model."
+                )
+
+        fold_metrics = cross_validate_model(
+            model_factory=_model_factory,
+            X=X, y=labels, n_splits=cv_folds, seed=seed,
+        )
+
+        model_metrics = {}
+        for key, values in fold_metrics.items():
+            model_metrics[key] = float(np.mean(values))
+            model_metrics[key + "_std"] = float(np.std(values))
+
+        print(f"\n[4/5] CV Results ({cv_folds} folds)")
+        print("=" * 60)
+        print(f"  Accuracy:     {model_metrics['accuracy']:.3f} ± {model_metrics['accuracy_std']:.3f}")
+        print(f"  F1 Score:     {model_metrics['f1']:.3f} ± {model_metrics['f1_std']:.3f}")
+        print(f"  FP Rate:      {model_metrics['fp_rate']:.3f} ± {model_metrics['fp_rate_std']:.3f}")
+        fp_red = model_metrics.get("fp_reduction", 0)
+        fp_red_std = model_metrics.get("fp_reduction_std", 0)
+        print(f"  FP Reduction: {fp_red * 100:.1f}% ± {fp_red_std * 100:.1f}%")
+        print(f"  Fault Recall: {model_metrics['fault_recall']:.3f} ± {model_metrics['fault_recall_std']:.3f}")
+        print("=" * 60)
+
+        return model_metrics
+
+    # ------------------------------------------------------------------
+    # Step 3: Split (single train/test)
     # ------------------------------------------------------------------
     X_train, X_test, y_train, y_test = train_test_split(
         X, labels, test_size=0.2, random_state=seed, stratify=labels,
@@ -215,7 +265,17 @@ def run_pipeline(
             X_train, y_train, X_val=X_test, y_val=y_test,
             epochs=epochs, batch_size=batch_size, early_stopping_patience=10,
         )
+        # Post-hoc temperature calibration on validation set
+        trainer.calibrate_temperature(X_test, y_test)
         y_pred = trainer.predict(X_test)
+    elif model_type == "xgboost":
+        bl = XGBoostBaseline(random_state=seed)
+        bl.fit(X_train, y_train)
+        y_pred = bl.predict(X_test)
+    elif model_type == "rule_based":
+        bl = RuleBasedBaseline()
+        bl.fit(X_train, y_train)
+        y_pred = bl.predict(X_test)
     else:
         bl = BaselineClassifier(random_state=seed)
         bl.fit(X_train, y_train)
@@ -273,12 +333,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--model", type=str, default="caaa",
-        choices=["caaa", "random_forest"],
+        choices=["caaa", "random_forest", "xgboost", "rule_based"],
         help="Model type",
     )
     parser.add_argument("--systems", nargs="+", default=["online-boutique"])
     parser.add_argument("--output", type=str, default="outputs/results")
     parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--include-hard", action="store_true",
+                        help="Include hard/adversarial scenarios in dataset")
+    parser.add_argument("--cv-folds", type=int, default=1,
+                        help="Number of cross-validation folds (1 = single split)")
 
     # Data source
     parser.add_argument(
@@ -346,6 +410,8 @@ def main() -> None:
         use_anomaly_detector=args.anomaly_detector,
         ad_epochs=args.ad_epochs,
         ad_threshold_percentile=args.ad_threshold,
+        include_hard=args.include_hard,
+        cv_folds=args.cv_folds,
     )
 
 

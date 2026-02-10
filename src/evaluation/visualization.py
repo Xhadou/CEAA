@@ -317,3 +317,235 @@ def plot_confidence_distribution(
         fig.savefig(save_path, dpi=300)
         logger.info("Confidence distribution saved to %s", save_path)
     plt.close(fig)
+
+
+# ── SHAP-based feature importance ─────────────────────────────────────
+
+
+def _get_shap_explainer(model: object, X_background: np.ndarray):
+    """Create an appropriate SHAP explainer for the given model.
+
+    Uses ``TreeExplainer`` for tree-based models (RandomForest, XGBoost)
+    and ``KernelExplainer`` for neural models or other opaque models.
+
+    Args:
+        model: A fitted model with a ``predict_proba`` method.
+        X_background: Background dataset for KernelExplainer (typically
+            50 representative training samples).
+
+    Returns:
+        A SHAP explainer instance.
+    """
+    import shap
+
+    # Tree-based models (sklearn RF, XGBoost)
+    inner = getattr(model, "model", model)
+    if hasattr(inner, "estimators_") or type(inner).__name__ == "XGBClassifier":
+        return shap.TreeExplainer(inner)
+
+    # Fallback: KernelExplainer for neural/opaque models
+    return shap.KernelExplainer(model.predict_proba, X_background, silent=True)
+
+
+def plot_shap_summary(
+    model: object,
+    X_test: np.ndarray,
+    feature_names: List[str],
+    save_path: Optional[str] = None,
+    X_background: Optional[np.ndarray] = None,
+    nsamples: int = 100,
+) -> None:
+    """Generate SHAP beeswarm summary plot showing global feature importance.
+
+    For sklearn tree models, uses ``TreeExplainer`` (fast).
+    For CAAA neural model, uses ``KernelExplainer`` with a background of
+    50 samples (slower — use ``nsamples`` to control runtime).
+
+    Args:
+        model: Fitted model with ``predict_proba`` method.
+        X_test: Test features of shape (n_samples, n_features).
+        feature_names: List of feature names (length 36).
+        save_path: Path to save the figure.
+        X_background: Background samples for KernelExplainer.
+            Defaults to first 50 samples of X_test.
+        nsamples: Number of samples for KernelExplainer (ignored for trees).
+    """
+    import shap
+
+    if X_background is None:
+        X_background = X_test[:50]
+
+    explainer = _get_shap_explainer(model, X_background)
+
+    if isinstance(explainer, shap.TreeExplainer):
+        shap_values = explainer.shap_values(X_test)
+    else:
+        shap_values = explainer.shap_values(X_test, nsamples=nsamples)
+
+    # For binary classification, use class-1 SHAP values if list
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]
+
+    fig = plt.figure(figsize=(10, 10))
+    shap.summary_plot(
+        shap_values, X_test, feature_names=feature_names,
+        show=False, plot_size=None,
+    )
+    plt.tight_layout()
+
+    if save_path:
+        _ensure_parent_dir(save_path)
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        logger.info("SHAP summary plot saved to %s", save_path)
+    plt.close("all")
+
+
+def plot_shap_by_class(
+    model: object,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    feature_names: List[str],
+    save_path: Optional[str] = None,
+    X_background: Optional[np.ndarray] = None,
+    nsamples: int = 100,
+) -> None:
+    """Show SHAP importance split by true class (FAULT vs EXPECTED_LOAD).
+
+    Reveals whether the model relies on context features vs metric features
+    differently for each class.
+
+    Args:
+        model: Fitted model with ``predict_proba`` method.
+        X_test: Test features.
+        y_test: True labels (0=FAULT, 1=EXPECTED_LOAD).
+        feature_names: Feature names.
+        save_path: Path to save the figure.
+        X_background: Background samples for KernelExplainer.
+        nsamples: Number of KernelExplainer samples.
+    """
+    import shap
+
+    if X_background is None:
+        X_background = X_test[:50]
+
+    explainer = _get_shap_explainer(model, X_background)
+
+    if isinstance(explainer, shap.TreeExplainer):
+        shap_values = explainer.shap_values(X_test)
+    else:
+        shap_values = explainer.shap_values(X_test, nsamples=nsamples)
+
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]
+
+    fault_mask = y_test == 0
+    load_mask = y_test == 1
+
+    fig, axes = plt.subplots(1, 2, figsize=(18, 8))
+
+    # FAULT class
+    if fault_mask.sum() > 0:
+        mean_abs_fault = np.abs(shap_values[fault_mask]).mean(axis=0)
+        sorted_idx = np.argsort(mean_abs_fault)[-15:]
+        axes[0].barh(
+            range(len(sorted_idx)),
+            mean_abs_fault[sorted_idx],
+            color="#e74c3c",
+        )
+        axes[0].set_yticks(range(len(sorted_idx)))
+        axes[0].set_yticklabels([feature_names[i] for i in sorted_idx], fontsize=8)
+        axes[0].set_title("FAULT — Top 15 Features")
+        axes[0].set_xlabel("Mean |SHAP value|")
+
+    # EXPECTED_LOAD class
+    if load_mask.sum() > 0:
+        mean_abs_load = np.abs(shap_values[load_mask]).mean(axis=0)
+        sorted_idx = np.argsort(mean_abs_load)[-15:]
+        axes[1].barh(
+            range(len(sorted_idx)),
+            mean_abs_load[sorted_idx],
+            color="#3498db",
+        )
+        axes[1].set_yticks(range(len(sorted_idx)))
+        axes[1].set_yticklabels([feature_names[i] for i in sorted_idx], fontsize=8)
+        axes[1].set_title("EXPECTED_LOAD — Top 15 Features")
+        axes[1].set_xlabel("Mean |SHAP value|")
+
+    plt.tight_layout()
+
+    if save_path:
+        _ensure_parent_dir(save_path)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        logger.info("SHAP by-class plot saved to %s", save_path)
+    plt.close(fig)
+
+
+def plot_shap_by_fault_type(
+    model: object,
+    X_test: np.ndarray,
+    fault_types: List[Optional[str]],
+    feature_names: List[str],
+    save_path: Optional[str] = None,
+    X_background: Optional[np.ndarray] = None,
+    nsamples: int = 100,
+) -> None:
+    """Show SHAP breakdown per fault type.
+
+    For example, cpu_hog faults should show high importance on cpu-related
+    features. Only fault samples (those with a non-None fault_type) are shown.
+
+    Args:
+        model: Fitted model with ``predict_proba`` method.
+        X_test: Test features.
+        fault_types: Per-sample fault type string (None for load cases).
+        feature_names: Feature names.
+        save_path: Path to save the figure.
+        X_background: Background samples for KernelExplainer.
+        nsamples: Number of KernelExplainer samples.
+    """
+    import shap
+
+    if X_background is None:
+        X_background = X_test[:50]
+
+    explainer = _get_shap_explainer(model, X_background)
+
+    if isinstance(explainer, shap.TreeExplainer):
+        shap_values = explainer.shap_values(X_test)
+    else:
+        shap_values = explainer.shap_values(X_test, nsamples=nsamples)
+
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]
+
+    # Group by fault type
+    unique_types = sorted(set(ft for ft in fault_types if ft is not None))
+    if not unique_types:
+        logger.warning("No fault types available; skipping per-fault-type SHAP plot.")
+        return
+
+    n_types = min(len(unique_types), 6)  # limit to 6 subplots
+    fig, axes = plt.subplots(1, n_types, figsize=(6 * n_types, 6))
+    if n_types == 1:
+        axes = [axes]
+
+    for ax, ft in zip(axes, unique_types[:n_types]):
+        mask = np.array([t == ft for t in fault_types])
+        if mask.sum() == 0:
+            continue
+        mean_abs = np.abs(shap_values[mask]).mean(axis=0)
+        sorted_idx = np.argsort(mean_abs)[-10:]
+        ax.barh(range(len(sorted_idx)), mean_abs[sorted_idx], color="#e74c3c")
+        ax.set_yticks(range(len(sorted_idx)))
+        ax.set_yticklabels([feature_names[i] for i in sorted_idx], fontsize=7)
+        ax.set_title(ft, fontsize=9)
+        ax.set_xlabel("Mean |SHAP|")
+
+    plt.suptitle("SHAP by Fault Type", fontsize=12)
+    plt.tight_layout()
+
+    if save_path:
+        _ensure_parent_dir(save_path)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        logger.info("SHAP by-fault-type plot saved to %s", save_path)
+    plt.close(fig)

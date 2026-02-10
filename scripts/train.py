@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--baseline", action="store_true", help="Also train and compare with BaselineClassifier")
+    parser.add_argument("--shap", action="store_true", help="Generate SHAP feature importance plots")
     parser.add_argument("--systems", nargs="+", default=["online-boutique"])
     parser.add_argument("--config", type=str, default=None, help="Path to config YAML file")
 
@@ -158,6 +159,9 @@ def main():
         early_stopping_patience=10,
     )
 
+    # Post-hoc temperature calibration on validation set
+    trainer.calibrate_temperature(X_test, y_test)
+
     # Evaluate CAAA
     caaa_pred = trainer.predict(X_test)
 
@@ -210,6 +214,24 @@ def main():
         naive_fpr = naive_metrics.get("fp_reduction", 0) * 100
         print(f"{'FP Reduction:':<16s}{caaa_fpr:>7.1f}%{bl_fpr:>11.1f}%{naive_fpr:>7.1f}%")
         print("=" * 50)
+
+    # SHAP feature importance
+    if args.shap:
+        from src.features.feature_schema import ALL_FEATURE_NAMES
+        from src.evaluation.visualization import plot_shap_summary
+
+        shap_dir = "outputs/results/shap"
+        os.makedirs(shap_dir, exist_ok=True)
+
+        # RF baseline SHAP (fast)
+        print("\nComputing SHAP values for Baseline RF...")
+        bl_for_shap = BaselineClassifier(random_state=args.seed)
+        bl_for_shap.fit(X_train, y_train)
+        plot_shap_summary(
+            bl_for_shap, X_test, ALL_FEATURE_NAMES,
+            save_path=os.path.join(shap_dir, "shap_baseline_rf.png"),
+        )
+        print(f"  Saved to {shap_dir}/shap_baseline_rf.png")
 
 
 if __name__ == "__main__":

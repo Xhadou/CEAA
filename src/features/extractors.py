@@ -3,10 +3,14 @@
 Extracts a fixed-size feature vector (36 features) from an AnomalyCase,
 organized into workload, behavioral, context, statistical, and service-level
 feature groups.
+
+The ``onset_gradient`` feature uses PELT change point detection (Killick 2012)
+via the ``ruptures`` library, inspired by BARO (FSE 2024) which showed that
+Bayesian change point detection before RCA improves results by 58-189%.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -46,6 +50,70 @@ def _linear_slope(arr: np.ndarray) -> float:
     with np.errstate(invalid="ignore"):
         coeffs = np.polyfit(x, arr, 1)
     return float(coeffs[0]) if np.isfinite(coeffs[0]) else 0.0
+
+
+def _detect_change_point(
+    series: np.ndarray, penalty: float = 10,
+) -> Tuple[int, float, float]:
+    """Detect the most significant change point in a time series.
+
+    Uses the PELT algorithm (Killick 2012) for O(n) change point detection
+    with an RBF cost model, inspired by BARO (FSE 2024) which showed that
+    change point detection before RCA improves results significantly.
+
+    The RBF (Radial Basis Function) kernel is chosen because it can detect
+    changes in both mean and variance simultaneously — important for fault
+    signals that may shift the distribution shape, not just the mean.
+
+    Args:
+        series: 1-D array of metric values.
+        penalty: Penalty value for PELT.  Higher values produce fewer change
+            points.
+
+    Returns:
+        Tuple of ``(change_idx, magnitude, abruptness)`` where:
+            - *change_idx*: index of the most significant change point, or
+              ``-1`` if none found.
+            - *magnitude*: ``|mean_after - mean_before| / std`` — measures
+              the size of the regime change.
+            - *abruptness*: ``|gradient[cp]| / std`` — measures how sudden
+              the change is.
+    """
+    import ruptures as rpt
+
+    if len(series) < 10:
+        return -1, 0.0, 0.0
+
+    algo = rpt.Pelt(model="rbf").fit(series.reshape(-1, 1))
+    change_points = algo.predict(pen=penalty)
+    # ruptures includes len(series) as the last element
+    change_points = [cp for cp in change_points if cp < len(series)]
+
+    if not change_points:
+        return -1, 0.0, 0.0
+
+    # Find the most significant change point.  We skip change points within
+    # 3 indices of the edges to ensure stable mean/gradient estimates on
+    # both sides of the split.
+    best_cp, best_magnitude = -1, 0.0
+    for cp in change_points:
+        if cp < 3 or cp > len(series) - 3:
+            continue
+        mean_before = np.mean(series[:cp])
+        mean_after = np.mean(series[cp:])
+        std = np.std(series) + 1e-10
+        magnitude = abs(mean_after - mean_before) / std
+        if magnitude > best_magnitude:
+            best_cp, best_magnitude = cp, magnitude
+
+    if best_cp == -1:
+        return -1, 0.0, 0.0
+
+    # Compute abruptness (gradient at change point)
+    grad = np.gradient(series)
+    abruptness = abs(grad[best_cp]) / (np.std(series) + 1e-10)
+
+    return best_cp, best_magnitude, abruptness
 
 
 class FeatureExtractor:
@@ -167,18 +235,13 @@ class FeatureExtractor:
             lat_corrs.append(_safe_pearsonr(lat, cpu))
         latency_cpu_correlation = float(np.mean(lat_corrs))
 
-        # 6. memory_trend_uniformity
-        slopes = []
+        # 6. change_point_magnitude (replaces memory_trend_uniformity)
+        magnitudes = []
         for svc in services:
-            mem = svc.metrics["memory_usage"].values
-            slopes.append(_linear_slope(mem))
-        slopes_arr = np.array(slopes)
-        mean_slope = np.mean(np.abs(slopes_arr))
-        if mean_slope == 0.0:
-            memory_trend_uniformity = 1.0
-        else:
-            cv = float(np.std(slopes_arr) / (np.abs(mean_slope) + 1e-10))
-            memory_trend_uniformity = max(0.0, 1.0 - cv)
+            cpu = svc.metrics["cpu_usage"].values
+            _, mag, _ = _detect_change_point(cpu)
+            magnitudes.append(mag)
+        change_point_magnitude = float(np.mean(magnitudes))
 
         return np.array([
             global_load_ratio,
@@ -186,7 +249,7 @@ class FeatureExtractor:
             cross_service_sync,
             error_rate_delta,
             latency_cpu_correlation,
-            memory_trend_uniformity,
+            change_point_magnitude,
         ])
 
     # ------------------------------------------------------------------
@@ -198,23 +261,13 @@ class FeatureExtractor:
         if n == 0:
             return np.zeros(6)
 
-        # 7. onset_gradient
-        gradients = []
+        # 7. onset_gradient (change-point-based abruptness via PELT)
+        abruptness_values = []
         for svc in services:
             cpu = svc.metrics["cpu_usage"].values
-            std = np.std(cpu)
-            if std == 0.0 or len(cpu) < 3:
-                gradients.append(0.0)
-                continue
-            z = (cpu - np.mean(cpu)) / std
-            anom_idx = np.where(z > 2.0)[0]
-            if len(anom_idx) == 0:
-                gradients.append(0.0)
-                continue
-            first = anom_idx[0]
-            grad = np.gradient(cpu)
-            gradients.append(float(np.abs(grad[first]) / (std + 1e-10)))
-        onset_gradient = float(np.mean(gradients))
+            _, _, abruptness = _detect_change_point(cpu)
+            abruptness_values.append(abruptness)
+        onset_gradient = float(np.mean(abruptness_values))
 
         # 8. peak_duration
         durations = []
@@ -302,6 +355,15 @@ class FeatureExtractor:
 
     # ------------------------------------------------------------------
     # Context features (5)
+    #
+    # NOTE: Context features are intentionally noisy to prevent label
+    # leakage.  Without noise, ``event_active`` would be a perfect proxy
+    # for the label (1.0 for all EXPECTED_LOAD, 0.0 for all FAULT),
+    # allowing the model to achieve near-perfect accuracy without
+    # learning from metric patterns.  Gaussian noise on
+    # ``context_confidence`` and ``event_expected_impact``, plus a
+    # label-independent ``recent_deployment`` base rate, force the model
+    # to rely on workload / behavioral / statistical features.
     # ------------------------------------------------------------------
 
     def _context_features(
@@ -310,16 +372,31 @@ class FeatureExtractor:
         services: Optional[List[ServiceMetrics]] = None,
         label: Optional[str] = None,
     ) -> np.ndarray:
+        """Extract context features from an anomaly case.
+
+        Context features are intentionally noisy to prevent label leakage
+        and force the model to learn from metric patterns rather than
+        relying on a deterministic context signal.
+
+        Noise applied:
+            - ``context_confidence``: Gaussian noise (std=0.1)
+            - ``event_expected_impact``: Gaussian noise (std=0.05)
+            - ``recent_deployment``: sampled from a base rate of 0.15
+              for all cases, independent of the label
+        """
         ctx = context or {}
 
         # 13. event_active
         event_active = 1.0 if "event_type" in ctx else 0.0
 
-        # 14. event_expected_impact
+        # 14. event_expected_impact (with Gaussian noise, std=0.05)
         if "load_multiplier" in ctx:
             event_expected_impact = min(float(ctx["load_multiplier"]) / 5.0, 1.0)
         else:
             event_expected_impact = 0.0
+        event_expected_impact = float(
+            np.clip(event_expected_impact + np.random.normal(0, 0.05), 0.0, 1.0)
+        )
 
         # 15. time_seasonality – derive from mean service timestamp
         if services:
@@ -338,13 +415,10 @@ class FeatureExtractor:
         else:
             time_seasonality = 0.5
 
-        # 16. recent_deployment – use context or infer from label
-        if ctx.get("recent_deployment") or label == "FAULT":
-            recent_deployment = 0.3 * np.random.random()
-        else:
-            recent_deployment = 0.0
+        # 16. recent_deployment – label-independent base rate of 0.15
+        recent_deployment = 0.3 * np.random.random() if np.random.random() < 0.15 else 0.0
 
-        # 17. context_confidence
+        # 17. context_confidence (with Gaussian noise, std=0.1)
         conf = 0.0
         if "event_type" in ctx:
             conf += 0.3
@@ -352,7 +426,7 @@ class FeatureExtractor:
             conf += 0.2
         if "event_name" in ctx:
             conf += 0.1
-        context_confidence = min(conf, 1.0)
+        context_confidence = float(np.clip(min(conf, 1.0) + np.random.normal(0, 0.1), 0.0, 1.0))
 
         return np.array([
             event_active,

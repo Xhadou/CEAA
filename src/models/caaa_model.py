@@ -1,4 +1,4 @@
-"""Main CAAA model combining temporal encoding with context integration."""
+"""Main CAAA model combining feature encoding with context integration."""
 
 import logging
 from typing import Tuple
@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from src.features.feature_schema import CONTEXT_START, CONTEXT_END
 from src.models.context_module import ContextIntegrationModule
-from src.models.temporal_encoder import TemporalEncoder
+from src.models.feature_encoder import FeatureEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +16,14 @@ logger = logging.getLogger(__name__)
 class CAAAModel(nn.Module):
     """Context-Aware Anomaly Attribution model.
 
-    Combines temporal encoding of feature vectors with context-aware
-    integration to produce classification logits.
+    Combines MLP-based feature encoding with context-aware integration
+    to produce classification logits.
 
     Attributes:
-        temporal_encoder: Encodes raw features into temporal representation.
-        context_module: Integrates context features with temporal encoding.
+        feature_encoder: MLP that projects raw features into a dense
+            hidden representation.
+        context_module: Integrates context features with the encoded
+            representation via attention and confidence gating.
         classifier: Classification head producing logits.
     """
 
@@ -37,7 +39,7 @@ class CAAAModel(nn.Module):
 
         Args:
             input_dim: Dimensionality of input feature vectors.
-            hidden_dim: Hidden dimensionality for temporal encoder.
+            hidden_dim: Hidden dimensionality for feature encoder.
             context_dim: Number of context features.
             n_classes: Number of output classes.
             dropout: Dropout probability.
@@ -46,7 +48,7 @@ class CAAAModel(nn.Module):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
 
-        self.temporal_encoder = TemporalEncoder(
+        self.feature_encoder = FeatureEncoder(
             input_dim=input_dim,
             hidden_dim=hidden_dim,
             dropout=dropout,
@@ -80,15 +82,34 @@ class CAAAModel(nn.Module):
         # Split context features using centralized schema
         context_features = x[:, CONTEXT_START:CONTEXT_END]
 
-        # Temporal encoding of full feature vector
-        temporal_encoding = self.temporal_encoder(x)
+        # Feature encoding of full feature vector
+        encoded_features = self.feature_encoder(x)
 
         # Context integration
-        integrated = self.context_module(temporal_encoding, context_features)
+        integrated = self.context_module(encoded_features, context_features)
 
         # Classification
         logits = self.classifier(integrated)
         return logits
+
+    def get_embeddings(self, x: torch.Tensor) -> torch.Tensor:
+        """Return intermediate embeddings before the classifier head.
+
+        These embeddings live in the ``hidden_dim``-dimensional space
+        produced by the feature encoder + context integration module.
+        They are used by the supervised contrastive loss to build a
+        representation space where same-class samples cluster together.
+
+        Args:
+            x: Input tensor of shape (batch, input_dim).
+
+        Returns:
+            Embedding tensor of shape (batch, hidden_dim).
+        """
+        context_features = x[:, CONTEXT_START:CONTEXT_END]
+        encoded_features = self.feature_encoder(x)
+        integrated = self.context_module(encoded_features, context_features)
+        return integrated
 
     def predict(self, x: torch.Tensor) -> torch.Tensor:
         """Returns class predictions (argmax of softmax).

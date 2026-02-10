@@ -28,7 +28,7 @@ WORKLOAD_NAMES: List[str] = [
     "cross_service_sync",
     "error_rate_delta",
     "latency_cpu_correlation",
-    "memory_trend_uniformity",
+    "change_point_magnitude",
 ]
 
 BEHAVIORAL_NAMES: List[str] = [

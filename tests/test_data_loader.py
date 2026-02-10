@@ -12,7 +12,12 @@ from src.data_loader.synthetic_generator import (
     EVENT_TYPE_CONFIG,
 )
 from src.data_loader.fault_generator import FaultGenerator, FAULT_TYPES
-from src.data_loader.dataset import generate_combined_dataset, generate_research_dataset
+from src.data_loader.dataset import (
+    generate_combined_dataset,
+    generate_hard_dataset,
+    generate_research_dataset,
+    HARD_SCENARIO_TYPES,
+)
 
 EXPECTED_COLUMNS = [
     "timestamp", "cpu_usage", "memory_usage", "request_rate",
@@ -317,6 +322,106 @@ class TestResearchDataset:
         event_types_seen = {
             c.context.get("event_type")
             for c in all_cases
-            if c.label == "EXPECTED_LOAD"
+            if c.label == "EXPECTED_LOAD" and c.context.get("event_type") is not None
         }
         assert event_types_seen == set(EVENT_TYPES)
+
+
+# ── generate_hard_dataset ─────────────────────────────────────────────
+
+class TestHardDataset:
+    def test_generate_hard_dataset_counts(self):
+        """Verify correct number of fault and load cases."""
+        fault_cases, load_cases = generate_hard_dataset(n_per_type=3, seed=42)
+        # 2 fault types × 3 = 6 fault cases
+        assert len(fault_cases) == 6
+        # 2 load types × 3 = 6 load cases
+        assert len(load_cases) == 6
+
+    def test_hard_dataset_labels(self):
+        """Verify labels are correct for each scenario type."""
+        fault_cases, load_cases = generate_hard_dataset(n_per_type=2, seed=42)
+        assert all(c.label == "FAULT" for c in fault_cases)
+        assert all(c.label == "EXPECTED_LOAD" for c in load_cases)
+
+    def test_hard_dataset_valid_metrics(self):
+        """Verify all hard cases produce valid metric DataFrames."""
+        fault_cases, load_cases = generate_hard_dataset(n_per_type=2, seed=42)
+        for case in fault_cases + load_cases:
+            assert len(case.services) > 0
+            for svc in case.services:
+                assert list(svc.metrics.columns) == EXPECTED_COLUMNS
+                assert len(svc.metrics) > 0
+                # Basic value range checks
+                assert np.all(svc.metrics["cpu_usage"].values >= 0)
+                assert np.all(svc.metrics["cpu_usage"].values <= 100)
+                assert np.all(svc.metrics["error_rate"].values >= 0)
+                assert np.all(svc.metrics["error_rate"].values <= 1)
+                assert np.all(svc.metrics["memory_usage"].values >= 0)
+                assert np.all(svc.metrics["memory_usage"].values <= 100)
+
+    def test_fault_during_event_has_context(self):
+        """FAULT_DURING_EVENT cases should have event_type in context."""
+        fault_cases, _ = generate_hard_dataset(n_per_type=3, seed=42)
+        fde_cases = [c for c in fault_cases if "fault_during_event" in c.case_id]
+        assert len(fde_cases) == 3
+        for case in fde_cases:
+            assert "event_type" in case.context
+            assert case.fault_service is not None
+            assert case.fault_type is not None
+
+    def test_capacity_exceeded_has_high_multiplier(self):
+        """CAPACITY_EXCEEDED_LOAD cases should have multiplier >= 5."""
+        _, load_cases = generate_hard_dataset(n_per_type=3, seed=42)
+        ce_cases = [c for c in load_cases if "capacity_exceeded" in c.case_id]
+        assert len(ce_cases) == 3
+        for case in ce_cases:
+            assert case.context.get("load_multiplier", 0) >= 5.0
+
+    def test_gradual_fault_has_fault_info(self):
+        """GRADUAL_FAULT cases should have fault_service and fault_type."""
+        fault_cases, _ = generate_hard_dataset(n_per_type=3, seed=42)
+        gf_cases = [c for c in fault_cases if "gradual_fault" in c.case_id]
+        assert len(gf_cases) == 3
+        for case in gf_cases:
+            assert case.fault_service is not None
+            assert case.fault_type is not None
+
+    def test_partial_load_has_context(self):
+        """PARTIAL_LOAD cases should have event context."""
+        _, load_cases = generate_hard_dataset(n_per_type=3, seed=42)
+        pl_cases = [c for c in load_cases if "partial_load" in c.case_id]
+        assert len(pl_cases) == 3
+        for case in pl_cases:
+            assert "event_type" in case.context
+
+    def test_hard_scenario_types_constant(self):
+        """Verify the HARD_SCENARIO_TYPES constant."""
+        assert len(HARD_SCENARIO_TYPES) == 4
+        assert "fault_during_event" in HARD_SCENARIO_TYPES
+        assert "capacity_exceeded_load" in HARD_SCENARIO_TYPES
+        assert "gradual_fault" in HARD_SCENARIO_TYPES
+        assert "partial_load" in HARD_SCENARIO_TYPES
+
+
+class TestCombinedDatasetWithHard:
+    def test_include_hard_flag(self):
+        """Verify include_hard replaces some cases with hard scenarios."""
+        fault_cases, load_cases = generate_combined_dataset(
+            n_fault=20, n_load=20, seed=42, include_hard=True,
+        )
+        assert len(fault_cases) == 20
+        assert len(load_cases) == 20
+        # Some cases should be from hard scenarios
+        hard_ids = [c.case_id for c in fault_cases + load_cases
+                    if c.case_id.startswith("hard_")]
+        assert len(hard_ids) > 0
+
+    def test_include_hard_false_default(self):
+        """When include_hard=False, no hard cases should appear."""
+        fault_cases, load_cases = generate_combined_dataset(
+            n_fault=10, n_load=10, seed=42, include_hard=False,
+        )
+        hard_ids = [c.case_id for c in fault_cases + load_cases
+                    if c.case_id.startswith("hard_")]
+        assert len(hard_ids) == 0

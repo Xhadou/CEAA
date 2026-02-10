@@ -1,10 +1,11 @@
 """Evaluation metrics for the CAAA system."""
 
 import logging
-from typing import Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.model_selection import StratifiedKFold
 
 logger = logging.getLogger(__name__)
 
@@ -176,3 +177,50 @@ def print_evaluation_summary(metrics: Dict[str, float]) -> None:
     summary = "\n".join(summary_lines)
     logger.info("\n%s", summary)
     print(summary)
+
+
+def cross_validate_model(
+    model_factory: Callable,
+    X: np.ndarray,
+    y: np.ndarray,
+    n_splits: int = 5,
+    seed: int = 42,
+) -> Dict[str, List[float]]:
+    """Run stratified k-fold CV and return per-fold metrics.
+
+    Args:
+        model_factory: Callable that returns a fresh (unfitted) model with
+            ``fit(X, y)`` and ``predict(X)`` methods.
+        X: Full feature matrix of shape (n_samples, n_features).
+        y: Full labels of shape (n_samples,).
+        n_splits: Number of folds.
+        seed: Random seed for fold generation.
+
+    Returns:
+        Dict mapping metric names to lists of per-fold values.
+    """
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+
+    fold_metrics: Dict[str, List[float]] = {}
+
+    for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y)):
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+
+        # Compute naive FP rate on this fold's test set
+        naive_fp = compute_false_positive_rate(
+            y_test, np.zeros(len(y_test), dtype=int)
+        )
+
+        model = model_factory()
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+
+        metrics = compute_all_metrics(y_test, y_pred, baseline_fp_rate=naive_fp)
+
+        for key, value in metrics.items():
+            fold_metrics.setdefault(key, []).append(value)
+
+        logger.debug("Fold %d: accuracy=%.3f, f1=%.3f", fold_idx, metrics["accuracy"], metrics["f1"])
+
+    return fold_metrics
