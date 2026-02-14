@@ -1,58 +1,100 @@
 # CAAA: Context-Aware Anomaly Attribution
 
-> A Novel Framework for False Positive Reduction in Cloud Microservice Anomaly Detection
+> A research framework for false positive reduction in cloud microservice anomaly detection through context-aware classification.
 
-## Overview
+## Research Motivation
 
-CAAA (Context-Aware Anomaly Attribution) is a research framework that classifies microservice anomalies as **FAULT**, **EXPECTED_LOAD**, or **UNKNOWN**. It addresses the critical problem of false positive alerts in cloud monitoring by integrating contextual information (scheduled events, deployments, time-of-day patterns) into the anomaly classification pipeline. The key innovation is a **Context Consistency Loss** that penalizes predictions contradicting available context signals, achieving significant false positive reduction while maintaining high fault recall.
+Modern cloud-native applications built on microservice architectures generate a high volume of monitoring alerts. Production deployments report **false positive rates of 6–28%**, and even state-of-the-art root cause analysis methods achieve only **46–63% localization accuracy** on large-scale systems ([RCAEval, WWW 2025](https://zenodo.org/records/14590730)). Alert fatigue from false positives leads operators to ignore or delay responses, directly undermining the reliability benefits that monitoring is supposed to provide.
+
+A core reason for this gap is that existing anomaly detection methods lack **contextual awareness**. A sudden spike in CPU utilization and request latency looks identical to an anomaly detector whether it is caused by a cascading fault or by a planned marketing campaign driving a legitimate traffic surge. Current approaches treat all anomalous-looking patterns as faults, producing false alerts whenever normal operational events (scheduled load tests, auto-scaling events, time-of-day traffic peaks, or recent deployments) cause metric deviations.
+
+CAAA addresses this gap by integrating external context signals — scheduled events, deployment history, and temporal seasonality — directly into the anomaly classification pipeline. Rather than simply detecting anomalies, CAAA **attributes** them: classifying each anomaly as a **FAULT** (actual system issue), **EXPECTED_LOAD** (legitimate workload spike), or **UNKNOWN** (insufficient confidence for automatic classification).
+
+### Research Questions
+
+1. **RQ1**: Can integrating operational context signals (scheduled events, deployments, time-of-day patterns) into anomaly classification reduce false positives by >40% while maintaining >90% fault recall?
+2. **RQ2**: How does the proposed Context Consistency Loss compare to standard cross-entropy for training context-aware classifiers?
+3. **RQ3**: Which context features contribute most to false positive reduction, and how does performance degrade as context availability decreases?
+
+### Novel Contributions
+
+1. **Context-Aware Anomaly Attribution** — The first framework to explicitly distinguish workload-induced anomalies from actual faults using external context signals within a unified classification pipeline.
+2. **Context Consistency Loss** — A novel composite loss function that penalizes predictions contradicting available context signals while calibrating prediction confidence based on context reliability.
+3. **Context Integration Module** — An attention-based module with confidence gating that learns to weight and integrate heterogeneous context features into the classification decision.
 
 ## Architecture
 
-The CAAA pipeline has an optional two-stage design:
+CAAA uses an optional two-stage pipeline:
 
-1. **Stage 1 (Optional): Anomaly Detection** — An LSTM autoencoder trained on normal
-   (expected-load) metrics identifies which time windows are anomalous via reconstruction
-   error. Enable with `--anomaly-detector` flag. Only anomalous windows proceed to Stage 2.
-2. **Stage 2: Anomaly Attribution** — The CAAA model classifies detected anomalies as
-   FAULT, EXPECTED_LOAD, or UNKNOWN using:
-   - **Feature Encoder**: MLP-based projection → 64-dim representation
-   - **Context Integration Module**: Attention + confidence gating over 5 context features
-   - **Classification Head**: 2-class logits + post-hoc UNKNOWN via confidence threshold
+```
+                          ┌─────────────────────────────────────────────┐
+                          │         Stage 2: Anomaly Attribution        │
+ Metrics ──► [Stage 1] ──►  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
+ (optional   Anomaly       │  Feature  │─►│ Context  │─►│ Classif. │──► FAULT / EXPECTED_LOAD / UNKNOWN
+  LSTM-AE)   Detection     │  Encoder  │  │ Module   │  │   Head   │  │
+                          │  (MLP)     │  │(Attn+Gate)│  │          │  │
+                          │  36d → 64d │  │ 5 context│  │ 2-class  │  │
+                          └──────────────────────────────────────────────┘
+```
 
-The **Context Consistency Loss** combines:
-- Standard cross-entropy classification loss
-- Context consistency penalty (contradicting context signals)
-- Confidence calibration loss (entropy regularization guided by context confidence)
+**Stage 1 (Optional): Anomaly Detection** — An LSTM autoencoder trained on normal (expected-load) metrics identifies anomalous time windows via reconstruction error. Only anomalous windows proceed to Stage 2. Enable with the `--anomaly-detector` flag.
 
-## Key Results
+**Stage 2: Anomaly Attribution** — The core CAAA model classifies detected anomalies:
+
+| Component | Description |
+|-----------|-------------|
+| **Feature Encoder** | 2-layer MLP projecting 36-dim feature vectors into 64-dim hidden representations |
+| **Context Integration Module** | Attention mechanism over 5 context features with learned confidence gating to modulate context influence |
+| **Classification Head** | 2-class output (FAULT vs EXPECTED_LOAD) with post-hoc UNKNOWN assignment via confidence thresholding |
+
+**Context Consistency Loss** combines three terms:
+- Cross-entropy classification loss
+- Context consistency penalty — penalizes predictions that contradict available context signals (e.g., classifying as FAULT when a scheduled load event is active)
+- Confidence calibration loss — entropy regularization guided by context confidence scores
+
+## Feature Vector
+
+The system extracts a 36-dimensional feature vector organized into 5 groups, defined centrally in `src/features/feature_schema.py`:
+
+| Group | Dims | Features | Purpose |
+|-------|------|----------|---------|
+| **Workload** | 0–5 | `global_load_ratio`, `cpu_request_correlation`, `cross_service_sync`, `error_rate_delta`, `latency_cpu_correlation`, `memory_trend_uniformity` | Characterize whether metric changes correlate with workload |
+| **Behavioral** | 6–11 | `onset_gradient`, `peak_duration`, `cascade_score`, `recovery_indicator`, `affected_service_ratio`, `variance_change_ratio` | Capture fault propagation signatures vs. smooth load ramps |
+| **Context** | 12–16 | `event_active`, `event_expected_impact`, `time_seasonality`, `recent_deployment`, `context_confidence` | External context signals (the key innovation) |
+| **Statistical** | 17–29 | Mean/std of CPU, memory, requests, errors, latency, network; `max_error_rate` | Standard metric statistics |
+| **Service-Level** | 30–35 | `n_services`, `max_cpu_service_ratio`, `max_error_service_ratio`, `cpu_spread`, `error_spread`, `latency_spread` | Cross-service aggregation patterns |
+
+## Performance Targets
 
 | Metric | Target | Description |
 |--------|--------|-------------|
-| FP Reduction | >40% | Reduction in false positive rate vs naive baseline |
+| False Positive Reduction | >40% | Reduction in false positive rate compared to naive (no-context) baseline |
 | Fault Recall | >90% | Proportion of actual faults correctly identified |
-| Accuracy | >80% | Overall classification accuracy |
+| Overall Accuracy | >80% | Classification accuracy across all classes |
 
-*Run `python scripts/ablation.py` to generate full results.*
+Run `python scripts/ablation.py` to reproduce systematic evaluations across model variants and hyperparameters.
 
 ## Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/Xhadou/CAAA.git
+cd CAAA
+
+# (Recommended) Create a virtual environment
+python -m venv venv
+source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-**Requirements:** Python 3.9+, PyTorch 2.0+, scikit-learn 1.3+, NumPy, Pandas, SciPy, Matplotlib, Seaborn, PyYAML.
-
-## Data
-
-CAAA supports two data modes:
-
-1. **Synthetic data** (default): Generated on-the-fly via `generate_combined_dataset()` or `generate_research_dataset()`. No downloads required.
-2. **RCAEval benchmark data**: Real-world microservice failure traces from Zenodo. Download with `download_rcaeval_dataset()` and load with `RCAEvalLoader`.
+**Requirements:** Python 3.9+, PyTorch 2.0+, scikit-learn 1.3+, NumPy, Pandas, SciPy, XGBoost, SHAP, ruptures, Matplotlib, Seaborn, PyYAML.
 
 ## Quick Start
 
 ```bash
-# Demo (small dataset, fast)
+# Quick demo (small dataset, fast iteration)
 python scripts/demo.py --n-fault 20 --n-load 20 --epochs 30
 
 # Full training with baseline comparison
@@ -61,24 +103,41 @@ python scripts/train.py --n-fault 100 --n-load 100 --epochs 50 --baseline
 # Training with config file
 python scripts/train.py --config configs/config.yaml --baseline
 
-# Ablation study (systematic evaluation of model variants)
-python scripts/ablation.py --n-fault 50 --n-load 50 --epochs 30 --n-runs 5
+# Or use the convenience script
+bash run_experiment.sh
+```
 
-# Full pipeline (supports both CAAA and sklearn models)
+### Model Selection
+
+CAAA supports multiple model backends for comparison:
+
+```bash
+# CAAA neural model (proposed method)
 python -m src.main --n-fault 50 --n-load 50 --model caaa
+
+# Baseline: Random Forest
 python -m src.main --n-fault 50 --n-load 50 --model random_forest
 
-# Download RCAEval dataset (requires network)
-python -c "from src.data_loader.download_data import download_rcaeval_dataset; download_rcaeval_dataset('RE1', ['online-boutique'])"
+# Baseline: XGBoost
+python -m src.main --n-fault 50 --n-load 50 --model xgboost
 
-# Run tests
-python -m pytest tests/ -v
+# Baseline: Rule-based
+python -m src.main --n-fault 50 --n-load 50 --model rule_based
+```
+
+### Ablation Study
+
+```bash
+# Systematic evaluation across model variants
+python scripts/ablation.py --n-fault 50 --n-load 50 --epochs 30 --n-runs 5
 ```
 
 ### Using RCAEval Real-World Data
 
+CAAA can be evaluated on [RCAEval](https://zenodo.org/records/14590730) benchmark data — real-world microservice failure traces from Online Boutique (12 services), Sock Shop (15 services), and Train Ticket (64 services):
+
 ```bash
-# Download RCAEval dataset (one-time, requires network)
+# Download dataset (one-time, requires network)
 python -m src.main --download-data --dataset RE1 --system online-boutique
 
 # Train with real fault data + synthetic expected-load cases
@@ -93,73 +152,125 @@ python scripts/ablation.py --data rcaeval --dataset RE1 --system online-boutique
     --epochs 50 --n-runs 10
 ```
 
+## Data
+
+CAAA supports two data modes:
+
+**Synthetic Data** (default) — Generated on-the-fly with no downloads required. Includes:
+- Normal microservice metric generation with realistic temporal patterns
+- 11 fault injection types: CPU spike, memory leak, latency injection, error burst, cascading failure, network partition, disk I/O saturation, thread pool exhaustion, connection pool leak, garbage collection storm, and downstream timeout
+- Load spike generation with configurable intensity and correlation patterns
+- Adversarial and hard-negative scenarios for robust evaluation
+
+**RCAEval Benchmark Data** — Real-world microservice failure traces from Zenodo covering three systems and 735 fault cases across 11 fault types. Download with `--download-data` and specify the dataset (RE1, RE2, RE3) and target system.
+
 ## Project Structure
 
 ```
-├── configs/config.yaml               # Training and model configuration
-├── src/
-│   ├── main.py                       # Unified pipeline entry point
-│   ├── data_loader/
-│   │   ├── data_types.py             # ServiceMetrics, AnomalyCase dataclasses
-│   │   ├── synthetic_generator.py    # Normal & load-spike metric generation
-│   │   ├── fault_generator.py        # Fault injection (11 types)
-│   │   ├── dataset.py               # Combined & research dataset generation
-│   │   ├── download_data.py         # RCAEval dataset downloader
-│   │   └── rcaeval_loader.py        # RCAEval dataset parser
-│   ├── features/
-│   │   ├── feature_schema.py            # Single source of truth for feature layout
-│   │   └── extractors.py            # 36-dimensional feature extraction
-│   ├── models/
-│   │   ├── feature_encoder.py       # MLP-based feature encoder
-│   │   ├── context_module.py        # Context integration with attention & gating
-│   │   ├── caaa_model.py            # Full CAAA model (novel)
-│   │   ├── anomaly_detector.py     # LSTM autoencoder anomaly detector
-│   │   ├── classifier.py            # Multi-backend sklearn classifier
-│   │   └── baseline.py             # RandomForest & Naive baselines
-│   ├── training/
-│   │   ├── losses.py               # Context Consistency Loss (novel)
-│   │   └── trainer.py              # PyTorch training harness
-│   └── evaluation/
-│       ├── metrics.py              # Evaluation metrics & FP reduction
-│       └── visualization.py        # Plotting utilities
+CAAA/
+├── configs/
+│   └── config.yaml                  # Model, training, and data configuration
 ├── scripts/
-│   ├── demo.py                     # Quick demonstration
-│   ├── train.py                    # Full training pipeline
-│   └── ablation.py                 # Ablation study framework
+│   ├── demo.py                      # Quick demonstration (small dataset)
+│   ├── train.py                     # Full training pipeline with baselines
+│   └── ablation.py                  # Ablation study framework
+├── src/
+│   ├── main.py                      # Unified pipeline entry point
+│   ├── data_loader/
+│   │   ├── data_types.py            # ServiceMetrics, AnomalyCase dataclasses
+│   │   ├── synthetic_generator.py   # Normal & load-spike metric generation
+│   │   ├── fault_generator.py       # 11-type fault injection engine
+│   │   ├── dataset.py              # Combined & research dataset generation
+│   │   ├── download_data.py        # RCAEval dataset downloader
+│   │   └── rcaeval_loader.py       # RCAEval dataset parser
+│   ├── features/
+│   │   ├── feature_schema.py       # Single source of truth for 36-dim layout
+│   │   ├── extractors.py           # Feature extraction from raw metrics
+│   │   └── context_features.py     # Context feature computation
+│   ├── models/
+│   │   ├── caaa_model.py           # CAAA neural model (proposed)
+│   │   ├── feature_encoder.py      # MLP-based feature encoder
+│   │   ├── context_module.py       # Context integration with attention & gating
+│   │   ├── anomaly_detector.py     # LSTM autoencoder for pre-stage detection
+│   │   ├── classifier.py          # Multi-backend sklearn classifier
+│   │   └── baseline.py            # RandomForest, XGBoost, rule-based baselines
+│   ├── training/
+│   │   ├── losses.py              # Context Consistency Loss (novel)
+│   │   └── trainer.py             # PyTorch training harness with early stopping
+│   └── evaluation/
+│       ├── metrics.py             # Evaluation metrics & FP reduction measurement
+│       └── visualization.py       # Confusion matrices, feature importance plots
 ├── tests/
-│   ├── test_data_loader.py         # Data generation tests
-│   ├── test_features.py            # Feature extraction tests
-│   ├── test_models.py              # Model component tests
-│   ├── test_integration.py         # End-to-end pipeline tests
-│   └── test_plan_modules.py        # Sklearn classifier tests
+│   ├── test_data_loader.py        # Data generation tests
+│   ├── test_features.py           # Feature extraction tests
+│   ├── test_models.py             # Model component tests
+│   ├── test_integration.py        # End-to-end pipeline tests
+│   ├── test_plan_modules.py       # Sklearn classifier tests
+│   └── test_rcaeval_pipeline.py   # RCAEval integration tests
 ├── requirements.txt
-├── .gitignore
+├── pyproject.toml
+├── run_experiment.sh
 └── README.md
 ```
 
-## Features
+## Testing
 
-The 36-dimensional feature vector is organized into 5 groups:
+```bash
+# Run full test suite
+python -m pytest tests/ -v
 
-| Group | Count | Description |
-|-------|-------|-------------|
-| Workload (0-5) | 6 | Global load ratio, CPU-request correlation, cross-service sync, error rate delta, latency-CPU correlation, memory trend uniformity |
-| Behavioral (6-11) | 6 | Onset gradient, peak duration, cascade score, recovery indicator, affected service ratio, variance change ratio |
-| Context (12-16) | 5 | Event active, event expected impact, time seasonality, recent deployment, context confidence |
-| Statistical (17-29) | 13 | Mean and std of 6 metrics + max error rate |
-| Service-Level (30-35) | 6 | Service count, max CPU/error ratios, CPU/error/latency spread |
+# Run with coverage
+python -m pytest tests/ -v --cov=src --cov-report=term-missing
+
+# Run specific test modules
+python -m pytest tests/test_integration.py -v    # End-to-end pipeline
+python -m pytest tests/test_models.py -v          # Model components
+python -m pytest tests/test_features.py -v        # Feature extraction
+```
+
+## Related Work
+
+This project builds on and addresses gaps identified in the following research areas. A full literature review covering 150+ papers (2020–2025) is available in `CAAA Literature Review.md`.
+
+- **Anomaly Detection**: Anomaly Transformer (ICLR 2022), DCdetector (KDD 2023), USAD (KDD 2020), OmniAnomaly (KDD 2019)
+- **Root Cause Analysis**: RCAEval benchmark (WWW 2025), BARO (FSE 2024), CIRCA (KDD 2022), RCD (NeurIPS 2022), DynaCausal (2025)
+- **GNN-based Fault Localization**: MicroRCA (NOMS 2020), MicroIRC (JSS 2024), CHASE (2024), DiagFusion (IEEE TSC 2023)
+- **Multi-modal Fusion**: AnoFusion (KDD 2023), DeepTraLog (ICSE 2022)
+- **LLM for AIOps**: RCACopilot (EuroSys 2024), RCAgent (CIKM 2024)
+
+**Key gap addressed**: No prior work dynamically adjusts anomaly classification based on workload context (time-of-day patterns, known events, deployment changes). CAAA is the first to integrate these signals into a unified attribution framework.
+
+## Configuration
+
+All model and training parameters are configurable via `configs/config.yaml`. Key settings:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `model.caaa_model.input_dim` | 36 | Feature vector dimensionality |
+| `model.caaa_model.hidden_dim` | 64 | Hidden layer size |
+| `model.caaa_model.context_dim` | 5 | Number of context features |
+| `training.epochs` | 50 | Training epochs |
+| `training.learning_rate` | 0.001 | Learning rate |
+| `training.early_stopping_patience` | 10 | Early stopping patience |
+| `evaluation.fp_reduction_target` | 0.40 | Target false positive reduction |
+| `evaluation.fault_recall_target` | 0.90 | Target fault recall |
 
 ## Citation
 
 ```bibtex
 @article{caaa2025,
-  title={CAAA: Context-Aware Anomaly Attribution for False Positive Reduction in Cloud Microservice Monitoring},
-  author={},
+  title={CAAA: Context-Aware Anomaly Attribution for False Positive
+         Reduction in Cloud Microservice Monitoring},
+  author={Jain, Pratyush},
   year={2025},
   institution={Shiv Nadar University}
 }
 ```
 
-## Authors
+## License
 
-Pratyush Jain
+This project is developed as academic research at Shiv Nadar University.
+
+## Author
+
+Pratyush Jain — Shiv Nadar University
