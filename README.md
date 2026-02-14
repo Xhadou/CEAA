@@ -29,12 +29,12 @@ CAAA uses an optional two-stage pipeline:
 ```
                           ┌─────────────────────────────────────────────┐
                           │         Stage 2: Anomaly Attribution        │
- Metrics ──► [Stage 1] ──►  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
- (optional   Anomaly       │  Feature  │─►│ Context  │─►│ Classif. │──► FAULT / EXPECTED_LOAD / UNKNOWN
-  LSTM-AE)   Detection     │  Encoder  │  │ Module   │  │   Head   │  │
-                          │  (MLP)     │  │(Attn+Gate)│  │          │  │
-                          │  36d → 64d │  │ 5 context│  │ 2-class  │  │
-                          └──────────────────────────────────────────────┘
+ Metrics ──► [Stage 1] ──►  ┌───────────┐  ┌───────────┐  ┌──────────┐  │
+ (optional   Anomaly      │ │  Feature  │─►│ Context   │─►│ Classif. │──► FAULT / EXPECTED_LOAD / UNKNOWN
+  LSTM-AE)   Detection    │ │  Encoder  │  │ Module    │  │   Head   │  │
+                          │ │  (MLP)    │  │(Attn+Gate)│  │          │  │
+                          │ │ 36d → 64d │  │ 5 context │  │ 2-class  │  │
+                          └─────────────────────────────────────────────┘
 ```
 
 **Stage 1 (Optional): Anomaly Detection** — An LSTM autoencoder trained on normal (expected-load) metrics identifies anomalous time windows via reconstruction error. Only anomalous windows proceed to Stage 2. Enable with the `--anomaly-detector` flag.
